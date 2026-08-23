@@ -18,7 +18,9 @@ armeabi-v7a, x86_64) in `build/app/outputs/flutter-apk/app-release.apk`.
 ## Signing
 
 Release builds are signed with `android/karots-release.jks`, configured by
-`android/key.properties`. Neither is committed. **Keep a private copy of both.**
+`android/key.properties`. Neither is committed. A copy of both, with the
+password, lives in `~/karots-signing-key/karots-trade/`. **Keep a copy off
+this laptop as well.**
 If that keystore is lost, no future build can install over an app already on a
 phone — the only way back is uninstall and reinstall, which wipes the database
 unless a backup was exported first. Without `key.properties` the build falls
@@ -51,6 +53,8 @@ the customer's transaction list.
 | `test/business_test.dart` | stock, ledger, quotes, returns, advances, corrections, backup |
 | `test/migration_test.dart` | a v1 database on a phone upgrades without losing data |
 | `test/ui_test.dart` | screens actually refresh after a save |
+| `test/backup_test.dart` | export/restore into a fresh install, row for row |
+| `test/receipt_render_test.dart` | every receipt kind, its header and contact line |
 
 UI never touches SQL — screens call `store.dart` only.
 

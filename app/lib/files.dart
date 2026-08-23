@@ -40,8 +40,10 @@ class Receipt {
   String get number => '${kind[0]}${no.toString().padLeft(4, '0')}';
 }
 
-Future<Uint8List> buildReceipt(Receipt r) async {
-  final doc = pw.Document(title: r.fileName);
+/// [compress] is only turned off by tests, so they can read the text back out
+/// of the produced bytes.
+Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
+  final doc = pw.Document(title: r.fileName, compress: compress);
   const grey = PdfColor.fromInt(0xFF6B7280);
   const rule = PdfColor.fromInt(0xFFD1D5DB);
   final business = s.businessName.isEmpty ? 'My Business' : s.businessName;

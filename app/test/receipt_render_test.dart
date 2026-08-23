@@ -1,0 +1,96 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:karots_trade/db.dart';
+import 'package:karots_trade/files.dart';
+import 'package:karots_trade/store.dart' as s;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
+
+/// Writes one of every receipt to disk so the layout can be eyeballed, and
+/// checks the contact line really is on all of them.
+/// PDF text is emitted one word per string literal, so pull the literals back
+/// out and re-join them to read the page as a person would.
+String pdfText(List<int> bytes) => RegExp(r'\((?:[^()\\]|\\.)*\)')
+    .allMatches(latin1.decode(bytes, allowInvalid: true))
+    .map((m) => m.group(0)!)
+    .map((tok) => tok.substring(1, tok.length - 1))
+    .join(' ');
+
+void main() {
+  setUp(() async {
+    await openDb(path: inMemoryDatabasePath);
+    await s.loadSettings();
+    await s.setSetting('business_name', 'Karots Traders');
+    await s.setSetting('business_phone', '077 123 4567');
+  });
+  tearDown(closeDb);
+
+  final samples = <String, Receipt>{
+    'sale': const Receipt(
+      kind: 'Sale',
+      no: 7,
+      date: 1755930000000,
+      customer: 'ABC Shop',
+      customerPhone: '0712345678',
+      lines: [
+        ('Coca-Cola 1L', 10, 18000),
+        ('Sprite 1L', 6, 17500),
+        ('Milk Powder 400g', 3, 121000),
+      ],
+      totals: [
+        ('Total', 648000),
+        ('Paid now', 200000),
+        ('From advance', 100000),
+        ('Balance due', 348000),
+      ],
+    ),
+    'payment': const Receipt(
+      kind: 'Payment',
+      no: 12,
+      date: 1755930000000,
+      customer: 'ABC Shop',
+      customerPhone: '0712345678',
+      totals: [('Payment received', 50000), ('Still owing', 298000)],
+      footnote: 'Received with thanks.',
+    ),
+    'return': const Receipt(
+      kind: 'Return',
+      no: 3,
+      date: 1755930000000,
+      customer: 'ABC Shop',
+      customerPhone: '0712345678',
+      reference: 'Against Sale #7',
+      lines: [('Coca-Cola 1L', 2, 18000)],
+      totals: [('Returned value', 36000), ('Credited to account', 36000)],
+      footnote: 'Stock taken back and the customer account credited.',
+    ),
+  };
+
+  test('every receipt carries the business header and the contact line',
+      () async {
+    final out = Directory('${Directory.systemTemp.path}/karots-receipts')
+      ..createSync(recursive: true);
+
+    for (final e in samples.entries) {
+      File('${out.path}/${e.key}.pdf')
+          .writeAsBytesSync(await buildReceipt(e.value));
+
+      final text = pdfText(await buildReceipt(e.value, compress: false));
+
+      expect(text, contains('Karots Traders'), reason: '${e.key}: seller name');
+      expect(text, contains('077 123 4567'), reason: '${e.key}: seller phone');
+      expect(text, contains('App made by Adhnan'), reason: '${e.key}: credit');
+      expect(text, contains('adhnanmsa@gmail.com'), reason: '${e.key}: email');
+      expect(text, contains('0769626396'), reason: '${e.key}: phone');
+      expect(text, contains('ABC Shop'), reason: '${e.key}: customer');
+    }
+    stdout.writeln('receipts written to ${out.path}');
+  });
+
+  test('the file name is the same shape for every kind', () async {
+    expect(samples['sale']!.fileName, 'Sale-0007');
+    expect(samples['payment']!.fileName, 'Payment-0012');
+    expect(samples['return']!.fileName, 'Return-0003');
+  });
+}
