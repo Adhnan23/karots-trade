@@ -1,0 +1,13 @@
+# Built artefacts
+*.apk
+*.aab
+
+# Signing secrets — never commit these.
+# Losing karots-release.jks means no future update can install over an
+# existing app; keep a copy somewhere safe and private.
+app/android/key.properties
+app/android/*.jks
+app/android/*.keystore
+
+# Backups exported from the app
+karots-backup-*.json

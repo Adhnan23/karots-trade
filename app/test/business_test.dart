@@ -1,0 +1,485 @@
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:karots_trade/db.dart';
+import 'package:karots_trade/files.dart';
+import 'package:karots_trade/models.dart';
+import 'package:karots_trade/store.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
+
+/// Rs. 150.00 -> 15000 cents
+int rs(num v) => (v * 100).round();
+
+Future<String> buy(String name,
+    {String? productId, required int cost, required int price, required int qty}) async {
+  await savePurchase([
+    BuyLine(productId: productId, name: name, cost: cost, price: price, qty: qty)
+  ]);
+  return (await products(q: name)).first.id;
+}
+
+void main() {
+  setUp(() async => openDb(path: inMemoryDatabasePath));
+  tearDown(closeDb);
+
+  group('batches', () {
+    test('different prices create separate batches, same price tops up', () async {
+      final id = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      await buy('Coca-Cola 1L', productId: id, cost: rs(160), price: rs(190), qty: 15);
+
+      var bs = await batches(id);
+      expect(bs.length, 2);
+      expect((await product(id))!.stock, 35);
+      expect(bs[0].price, rs(180));
+      expect(bs[1].price, rs(190));
+
+      // Same cost/price pair again — no third batch, quantity grows instead.
+      await buy('Coca-Cola 1L', productId: id, cost: rs(150), price: rs(180), qty: 5);
+      bs = await batches(id);
+      expect(bs.length, 2);
+      expect(bs[0].qtyLeft, 25);
+      expect(bs[0].qtyIn, 25);
+      expect((await product(id))!.stock, 40);
+    });
+
+    test('purchase history is kept even when a batch is topped up', () async {
+      final id = await buy('Soap', cost: rs(50), price: rs(70), qty: 10);
+      await buy('Soap', productId: id, cost: rs(50), price: rs(70), qty: 10);
+      expect((await purchases()).length, 2);
+    });
+
+    test('zero quantity is rejected', () async {
+      expect(() => savePurchase([BuyLine(name: 'X', cost: 1, price: 2, qty: 0)]),
+          throwsA(isA<Exception>()));
+      expect((await products()).length, 0);
+    });
+  });
+
+  group('sales', () {
+    late String pid, cid, batchA;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      await buy('Coca-Cola 1L', productId: pid, cost: rs(160), price: rs(190), qty: 15);
+      final bs = await batches(pid);
+      batchA = bs[0].id;
+      cid = await saveCustomer(name: 'ABC Shop', phone: '0712345678');
+    });
+
+    SellLine line(String batchId, int price, int qty) =>
+        SellLine(productId: pid, batchId: batchId, name: 'Coca-Cola 1L', price: price, qty: qty);
+
+    test('sale deducts the chosen batch only and records the ledger', () async {
+      await saveDoc(
+          customerId: cid,
+          quote: false,
+          lines: [line(batchA, rs(180), 10)],
+          paid: rs(1000));
+
+      final bs = await batches(pid);
+      expect(bs[0].qtyLeft, 10, reason: 'batch A sold from');
+      expect(bs[1].qtyLeft, 15, reason: 'batch B untouched');
+      expect(await balance(cid), rs(800));
+    });
+
+    test('stock can never go negative', () async {
+      expect(
+          () => saveDoc(customerId: cid, quote: false, lines: [line(batchA, rs(180), 21)]),
+          throwsA(isA<Exception>()));
+      expect((await batches(pid))[0].qtyLeft, 20, reason: 'rolled back');
+      expect(await balance(cid), 0, reason: 'no ledger entry either');
+    });
+
+    test('unpaid, part paid and fully paid sales', () async {
+      await saveDoc(customerId: cid, quote: false, lines: [line(batchA, rs(180), 1)]);
+      expect(await balance(cid), rs(180));
+
+      await saveDoc(
+          customerId: cid, quote: false, lines: [line(batchA, rs(180), 1)], paid: rs(100));
+      expect(await balance(cid), rs(260));
+
+      await saveDoc(
+          customerId: cid, quote: false, lines: [line(batchA, rs(180), 1)], paid: rs(180));
+      expect(await balance(cid), rs(260));
+    });
+
+    test('payments reduce debt and advances go negative', () async {
+      await saveDoc(
+          customerId: cid,
+          quote: false,
+          lines: [line(batchA, rs(180), 10)],
+          paid: rs(1000));
+      await recordPayment(cid, rs(500));
+      expect(await balance(cid), rs(300));
+
+      await recordPayment(cid, rs(800));
+      expect(await balance(cid), -rs(500), reason: 'overpaid becomes an advance');
+      expect(balanceLabelIsAdvance(await balance(cid)), isTrue);
+    });
+
+    test('cancelling a sale restores stock and reverses the charge', () async {
+      final id = await saveDoc(
+          customerId: cid,
+          quote: false,
+          lines: [line(batchA, rs(180), 10)],
+          paid: rs(1000));
+      await cancelDoc(id);
+
+      expect((await batches(pid))[0].qtyLeft, 20);
+      expect(await balance(cid), -rs(1000),
+          reason: 'money actually received stays as customer credit');
+      expect(() => cancelDoc(id), throwsA(isA<Exception>()));
+    });
+
+    test('historical prices survive later batch changes', () async {
+      final id = await saveDoc(
+          customerId: cid, quote: false, lines: [line(batchA, rs(180), 2)]);
+      // Buying more at a new price must not rewrite what was already sold.
+      await buy('Coca-Cola 1L', productId: pid, cost: rs(170), price: rs(210), qty: 5);
+      expect((await docItems(id)).first.price, rs(180));
+    });
+  });
+
+  group('quotations', () {
+    late String pid, cid, batchA;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      batchA = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    Future<String> quote(int qty) => saveDoc(
+          customerId: cid,
+          quote: true,
+          lines: [
+            SellLine(
+                productId: pid,
+                batchId: batchA,
+                name: 'Coca-Cola 1L',
+                price: rs(180),
+                qty: qty)
+          ],
+        );
+
+    test('creating a quotation changes nothing', () async {
+      await quote(5);
+      expect((await product(pid))!.stock, 20);
+      expect(await balance(cid), 0);
+    });
+
+    test('converting deducts stock exactly once', () async {
+      final q = await quote(5);
+      final saleId = await convertQuote(q, paid: rs(400));
+
+      expect((await product(pid))!.stock, 15);
+      expect(await balance(cid), rs(500));
+      expect((await doc(q))!.status, 'completed');
+      expect((await doc(saleId))!.fromQuote, q);
+    });
+
+    test('a quotation cannot be converted twice', () async {
+      final q = await quote(5);
+      await convertQuote(q);
+      expect(() => convertQuote(q), throwsA(isA<Exception>()));
+      expect((await product(pid))!.stock, 15, reason: 'no double deduction');
+    });
+
+    test('conversion fails cleanly when stock ran out meanwhile', () async {
+      final q = await quote(20);
+      // Sell the shelf empty before the quote is accepted.
+      await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(
+            productId: pid, batchId: batchA, name: 'Coca-Cola 1L', price: rs(180), qty: 20)
+      ]);
+      expect(() => convertQuote(q), throwsA(isA<Exception>()));
+      expect((await doc(q))!.status, 'pending', reason: 'quote left untouched');
+    });
+
+    test('cancelling a quotation blocks conversion', () async {
+      final q = await quote(5);
+      await cancelDoc(q);
+      expect(() => convertQuote(q), throwsA(isA<Exception>()));
+      expect((await product(pid))!.stock, 20);
+    });
+  });
+
+  group('returns', () {
+    late String pid, cid, saleId, batchA;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      batchA = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+      saleId = await saveDoc(
+        customerId: cid,
+        quote: false,
+        paid: rs(1000),
+        lines: [
+          SellLine(
+              productId: pid,
+              batchId: batchA,
+              name: 'Coca-Cola 1L',
+              price: rs(180),
+              qty: 10)
+        ],
+      );
+    });
+
+    test('returned items go back to their own batch and credit the customer', () async {
+      final item = (await docItems(saleId)).first;
+      await saveReturn(saleId, {item.id: 3});
+
+      expect((await batches(pid)).first.qtyLeft, 13);
+      expect(await balance(cid), rs(800) - rs(540));
+      expect((await docItems(saleId)).first.returned, 3);
+      expect((await returns()).length, 1);
+    });
+
+    test('cannot return more than was sold, even across two returns', () async {
+      final item = (await docItems(saleId)).first;
+      await saveReturn(saleId, {item.id: 6});
+      expect(() => saveReturn(saleId, {item.id: 5}), throwsA(isA<Exception>()));
+
+      expect((await batches(pid)).first.qtyLeft, 16, reason: 'second return rolled back');
+      await saveReturn(saleId, {item.id: 4});
+      expect((await batches(pid)).first.qtyLeft, 20);
+    });
+
+    test('an empty return is refused', () async {
+      final item = (await docItems(saleId)).first;
+      expect(() => saveReturn(saleId, {item.id: 0}), throwsA(isA<Exception>()));
+    });
+
+    test('cancelling a partly returned sale only restores what is left', () async {
+      final item = (await docItems(saleId)).first;
+      await saveReturn(saleId, {item.id: 4});
+      await cancelDoc(saleId);
+      expect((await batches(pid)).first.qtyLeft, 20, reason: 'not 24');
+    });
+  });
+
+  group('backup', () {
+    test('round trip keeps products, photos, batches, ledger and settings', () async {
+      final photo = Uint8List.fromList(List.generate(64, (i) => i));
+      final pid = await saveProduct(name: 'Coca-Cola 1L', image: photo);
+      await savePurchase(
+          [BuyLine(productId: pid, cost: rs(150), price: rs(180), qty: 20)]);
+      final cid = await saveCustomer(name: 'ABC Shop', phone: '0712345678');
+      final batchA = (await batches(pid)).first.id;
+      await saveDoc(customerId: cid, quote: false, paid: rs(500), lines: [
+        SellLine(
+            productId: pid, batchId: batchA, name: 'Coca-Cola 1L', price: rs(180), qty: 5)
+      ]);
+      await setSetting('business_name', 'Karots Traders');
+
+      final backup = await exportBackup();
+      await db.delete('doc_items');
+      await db.delete('docs');
+      await db.delete('ledger');
+      await db.delete('batches');
+      await db.delete('products');
+      expect((await products()).length, 0);
+
+      await importBackup(backup);
+      final p = (await products()).single;
+      expect(p.name, 'Coca-Cola 1L');
+      expect(p.image, photo, reason: 'photos must survive a backup');
+      expect(p.stock, 15);
+      expect(await balance(cid), rs(400));
+      expect((await allSettingsMap())['business_name'], 'Karots Traders');
+    });
+
+    test('a junk file is rejected without touching the data', () async {
+      await saveProduct(name: 'Soap');
+      expect(() => importBackup(Uint8List.fromList('not a backup'.codeUnits)),
+          throwsA(isA<Exception>()));
+      expect((await products()).length, 1);
+    });
+  });
+
+  group('advances settle sales', () {
+    late String pid, cid, batchA;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      batchA = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    Future<String> sell(int qty, {int paid = 0, bool quote = false}) => saveDoc(
+          customerId: cid,
+          quote: quote,
+          paid: paid,
+          lines: [
+            SellLine(
+                productId: pid,
+                batchId: batchA,
+                name: 'Coca-Cola 1L',
+                price: rs(180),
+                qty: qty)
+          ],
+        );
+
+    test('an advance bigger than the sale marks it fully paid', () async {
+      await recordPayment(cid, rs(2000));
+      final id = await sell(10); // Rs. 1,800, no cash handed over
+      final d = (await doc(id))!;
+
+      expect(d.paid, 0);
+      expect(d.advanceUsed, rs(1800));
+      expect(d.due, 0, reason: 'must not read as unpaid');
+      expect(await balance(cid), -rs(200), reason: 'Rs. 200 advance left');
+    });
+
+    test('a smaller advance leaves the rest owing', () async {
+      await recordPayment(cid, rs(500));
+      final d = (await doc(await sell(10)))!;
+
+      expect(d.advanceUsed, rs(500));
+      expect(d.due, rs(1300));
+      expect(await balance(cid), rs(1300));
+    });
+
+    test('cash and advance together', () async {
+      await recordPayment(cid, rs(2000));
+      final d = (await doc(await sell(10, paid: rs(500))))!;
+
+      expect(d.paid, rs(500));
+      expect(d.advanceUsed, rs(1300));
+      expect(d.due, 0);
+      expect(await balance(cid), -rs(700));
+    });
+
+    test('a quotation never touches the advance', () async {
+      await recordPayment(cid, rs(2000));
+      final d = (await doc(await sell(10, quote: true)))!;
+      expect(d.advanceUsed, 0);
+      expect(await balance(cid), -rs(2000));
+    });
+
+    test('converting a quote applies the advance the customer has by then',
+        () async {
+      final q = await sell(10, quote: true);
+      await recordPayment(cid, rs(2000));
+      final d = (await doc(await convertQuote(q)))!;
+
+      expect(d.advanceUsed, rs(1800));
+      expect(d.due, 0);
+      expect(await balance(cid), -rs(200));
+    });
+
+    test('cancelling gives the advance back', () async {
+      await recordPayment(cid, rs(2000));
+      await cancelDoc(await sell(10));
+      expect(await balance(cid), -rs(2000));
+      expect((await batches(pid)).first.qtyLeft, 20);
+    });
+
+    test('payments are numbered so a receipt can be reprinted', () async {
+      final a = await recordPayment(cid, rs(100));
+      final b = await recordPayment(cid, rs(200));
+      expect((await ledgerEntry(a))!.no, 1);
+      expect((await ledgerEntry(b))!.no, 2);
+      expect((await ledgerEntry(b))!.balanceAfter, -rs(300),
+          reason: 'balance printed on the receipt');
+    });
+  });
+
+  group('correcting a batch', () {
+    late String pid, batchA;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+      batchA = (await batches(pid)).first.id;
+    });
+
+    test('a miscount is written down, not silently applied', () async {
+      await fixBatch(batchA, qty: 17, cost: rs(150), price: rs(180),
+          reason: 'Three broken');
+
+      expect((await product(pid))!.stock, 17);
+      final f = (await adjustments(productId: pid)).single;
+      expect(f['qty_before'], 20);
+      expect(f['qty_after'], 17);
+      expect(f['reason'], 'Three broken');
+    });
+
+    test('correcting the price leaves past sales alone', () async {
+      final cid = await saveCustomer(name: 'ABC Shop');
+      final sale = await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(
+            productId: pid, batchId: batchA, name: 'Coca-Cola 1L', price: rs(180), qty: 2)
+      ]);
+      await fixBatch(batchA, qty: 18, cost: rs(150), price: rs(200));
+
+      expect((await docItems(sale)).first.price, rs(180), reason: 'history is history');
+      expect((await batches(pid)).first.price, rs(200));
+      expect(await balance(cid), rs(360));
+    });
+
+    test('a correction upward keeps received at least the shelf count', () async {
+      await fixBatch(batchA, qty: 25, cost: rs(150), price: rs(180));
+      final b = (await batches(pid)).first;
+      expect(b.qtyLeft, 25);
+      expect(b.qtyIn, 25);
+    });
+
+    test('negative stock and no-op corrections are refused', () async {
+      expect(() => fixBatch(batchA, qty: -1, cost: rs(150), price: rs(180)),
+          throwsA(isA<Exception>()));
+      expect(() => fixBatch(batchA, qty: 20, cost: rs(150), price: rs(180)),
+          throwsA(isA<Exception>()));
+      expect((await adjustments()).length, 0);
+    });
+
+    test('corrections survive a backup round trip', () async {
+      await fixBatch(batchA, qty: 17, cost: rs(150), price: rs(180), reason: 'Broken');
+      final backup = await exportBackup();
+      await importBackup(backup);
+      expect((await adjustments()).length, 1);
+      expect((await product(pid))!.stock, 17);
+    });
+  });
+
+  test('the full acceptance scenario', () async {
+    // Buy the same product at two prices.
+    final pid = await buy('Coca-Cola 1L', cost: rs(150), price: rs(180), qty: 20);
+    await buy('Coca-Cola 1L', productId: pid, cost: rs(160), price: rs(190), qty: 15);
+    expect((await product(pid))!.stock, 35);
+
+    final cid = await saveCustomer(name: 'ABC Shop', phone: '0712345678');
+    final batchA = (await batches(pid)).first.id;
+    SellLine l(int qty) => SellLine(
+        productId: pid, batchId: batchA, name: 'Coca-Cola 1L', price: rs(180), qty: qty);
+
+    // Quote first, no stock movement.
+    final q = await saveDoc(customerId: cid, quote: true, lines: [l(10)]);
+    expect((await product(pid))!.stock, 35);
+
+    // Convert with a partial payment.
+    await convertQuote(q, paid: rs(1000));
+    expect((await batches(pid)).first.qtyLeft, 10);
+    expect(await balance(cid), rs(800));
+
+    // Later payment.
+    await recordPayment(cid, rs(500));
+    expect(await balance(cid), rs(300));
+
+    // Two of them come back.
+    final sale = (await docs(customerId: cid, kind: 'sale')).first;
+    final item = (await docItems(sale.id)).first;
+    await saveReturn(sale.id, {item.id: 2});
+    expect((await batches(pid)).first.qtyLeft, 12);
+    expect(await balance(cid), rs(300) - rs(360));
+
+    expect((await ledger(cid)).length, 4, reason: 'sale, payment, payment, return');
+  });
+}
+
+Future<Map<String, String>> allSettingsMap() async {
+  await loadSettings();
+  return settings;
+}
+
+bool balanceLabelIsAdvance(int cents) => cents < 0;
