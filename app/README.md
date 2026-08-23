@@ -55,6 +55,7 @@ the customer's transaction list.
 | `test/ui_test.dart` | screens actually refresh after a save |
 | `test/backup_test.dart` | export/restore into a fresh install, row for row |
 | `test/receipt_render_test.dart` | every receipt kind, its header and contact line |
+| `test/tamil_test.dart` | every visible string has a Tamil entry, and it fits |
 
 UI never touches SQL — screens call `store.dart` only.
 
@@ -70,9 +71,11 @@ UI never touches SQL — screens call `store.dart` only.
 - Cancelling a sale returns unsold stock and reverses the charge. Money already
   received stays on the ledger as customer credit — it really was received.
 - A return puts stock back into the exact batch it left and credits the sale price.
-- An advance already on the ledger settles a new sale on the spot: it is recorded on
-  the sale as `advance_used` (no second ledger entry, the credit is already there), so
-  a sale covered by an advance reads as paid instead of unpaid.
+- **A sale's paid/unpaid status is derived, never stored.** A customer runs one
+  account, so money coming in clears the oldest unpaid sale first. A part-paid sale
+  settles itself the moment a later payment covers it, and an advance paid before the
+  sale was written settles it too — one rule, no special cases. `docs.paid` is only a
+  record of cash taken at the counter; `settled` is the truth and is computed in SQL.
 - Correcting a batch changes that batch only. Sales already made keep the price they
   were charged, and every correction is stored with before/after values.
 - Backup is one JSON file containing every table plus product photos as base64.
@@ -87,7 +90,11 @@ UI never touches SQL — screens call `store.dart` only.
 - **One `store.dart` instead of nine repository classes.** Same separation of UI from
   SQL, a lot less ceremony. Split it if it ever stops fitting in your head.
 - **PDF receipts are English only.** Tamil in a PDF needs a bundled Tamil font; the app
-  UI switches language, the receipts do not.
+  UI switches language, the receipts do not. Type a Tamil business name in Settings and
+  it will not appear on the printed receipt.
+- **Tamil is kept terse on purpose.** A literal translation does not fit a phone tab or
+  a home tile. `Fit` shrinks a label rather than clipping it, and `tamil_test.dart`
+  fails if a new string has no translation or if one grows too long.
 - Purchases record no supplier debt, by design.
 - **Package id is `com.karots.karots_trade`.** Changing it makes Android treat
   the result as a different app: separate install, empty database. Leave it.

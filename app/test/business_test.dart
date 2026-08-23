@@ -298,7 +298,7 @@ void main() {
     });
   });
 
-  group('advances settle sales', () {
+  group('a sale settles from the customer account', () {
     late String pid, cid, batchA;
 
     setUp(() async {
@@ -321,13 +321,46 @@ void main() {
           ],
         );
 
+    test('paying the rest later clears the sale', () async {
+      // The reported bug: part paid at the counter, settled up days later,
+      // and the sale still read "Part paid" forever.
+      final id = await sell(10, paid: rs(1000)); // Rs. 1,800 bill
+      expect((await doc(id))!.due, rs(800));
+
+      await recordPayment(cid, rs(800));
+      final d = (await doc(id))!;
+      expect(d.settled, rs(1800));
+      expect(d.due, 0, reason: 'the bill is clear');
+      expect(d.paid, rs(1000), reason: 'the till record does not change');
+      expect(d.settledLater, isTrue);
+      expect(await balance(cid), 0);
+    });
+
+    test('paying part of what is left still reads as part paid', () async {
+      final id = await sell(10, paid: rs(1000));
+      await recordPayment(cid, rs(300));
+      final d = (await doc(id))!;
+      expect(d.settled, rs(1300));
+      expect(d.due, rs(500));
+    });
+
+    test('money clears the oldest bill first', () async {
+      final first = await sell(5); // Rs. 900
+      final second = await sell(2); // Rs. 360
+      await recordPayment(cid, rs(1000));
+
+      expect((await doc(first))!.due, 0, reason: 'oldest cleared');
+      expect((await doc(second))!.settled, rs(100));
+      expect((await doc(second))!.due, rs(260));
+      expect(await balance(cid), rs(260));
+    });
+
     test('an advance bigger than the sale marks it fully paid', () async {
       await recordPayment(cid, rs(2000));
-      final id = await sell(10); // Rs. 1,800, no cash handed over
-      final d = (await doc(id))!;
+      final d = (await doc(await sell(10)))!;
 
-      expect(d.paid, 0);
-      expect(d.advanceUsed, rs(1800));
+      expect(d.paid, 0, reason: 'no cash at the counter');
+      expect(d.settled, rs(1800));
       expect(d.due, 0, reason: 'must not read as unpaid');
       expect(await balance(cid), -rs(200), reason: 'Rs. 200 advance left');
     });
@@ -336,7 +369,7 @@ void main() {
       await recordPayment(cid, rs(500));
       final d = (await doc(await sell(10)))!;
 
-      expect(d.advanceUsed, rs(500));
+      expect(d.settled, rs(500));
       expect(d.due, rs(1300));
       expect(await balance(cid), rs(1300));
     });
@@ -346,15 +379,15 @@ void main() {
       final d = (await doc(await sell(10, paid: rs(500))))!;
 
       expect(d.paid, rs(500));
-      expect(d.advanceUsed, rs(1300));
+      expect(d.settled, rs(1800));
       expect(d.due, 0);
       expect(await balance(cid), -rs(700));
     });
 
-    test('a quotation never touches the advance', () async {
+    test('a quotation is never settled', () async {
       await recordPayment(cid, rs(2000));
       final d = (await doc(await sell(10, quote: true)))!;
-      expect(d.advanceUsed, 0);
+      expect(d.settled, 0);
       expect(await balance(cid), -rs(2000));
     });
 
@@ -364,9 +397,27 @@ void main() {
       await recordPayment(cid, rs(2000));
       final d = (await doc(await convertQuote(q)))!;
 
-      expect(d.advanceUsed, rs(1800));
+      expect(d.settled, rs(1800));
       expect(d.due, 0);
       expect(await balance(cid), -rs(200));
+    });
+
+    test('a return credits the account and can clear a later bill', () async {
+      final paidSale = await sell(10, paid: rs(1800));
+      final item = (await docItems(paidSale)).first;
+      await saveReturn(paidSale, {item.id: 5}); // Rs. 900 back
+
+      final next = await sell(4); // Rs. 720
+      expect((await doc(next))!.due, 0, reason: 'covered by the return credit');
+      expect(await balance(cid), -rs(180));
+    });
+
+    test('a cancelled sale never counts as settled', () async {
+      await recordPayment(cid, rs(2000));
+      final id = await sell(10);
+      await cancelDoc(id);
+      expect((await doc(id))!.settled, 0);
+      expect(await balance(cid), -rs(2000), reason: 'advance untouched');
     });
 
     test('cancelling gives the advance back', () async {

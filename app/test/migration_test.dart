@@ -98,7 +98,7 @@ void main() {
 
     final d = (await doc('d1'))!;
     expect(d.paid, 100000);
-    expect(d.advanceUsed, 0, reason: 'new column defaults safely');
+    expect(d.settled, 100000, reason: 'derived from the ledger that came across');
     expect(d.due, 80000);
 
     // The new tables and columns are usable straight away.

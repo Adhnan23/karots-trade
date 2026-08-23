@@ -38,48 +38,232 @@ final locale = ValueNotifier<String>('en');
 
 String t(String key) => locale.value == 'en' ? key : (_ta[key] ?? key);
 
+/// Exposed so a test can prove every string the app can show has a Tamil
+/// entry, rather than finding out on a customer's phone.
+Set<String> get tamilKeys => _ta.keys.toSet();
+
+/// Business-rule errors read like 'Not enough stock: Coca-Cola 1L'. Translate
+/// the sentence and leave the name alone.
+String tMessage(String message) {
+  if (locale.value == 'en') return message;
+  final cut = message.indexOf(': ');
+  if (cut < 0) return t(message);
+  return '${t(message.substring(0, cut))}: ${message.substring(cut + 2)}';
+}
+
+/// Kept deliberately short. A phone screen has no room for a literal
+/// translation, and a clipped word is worse than a terse one.
 const _ta = <String, String>{
+  // Navigation and the home screen
   'Home': 'முகப்பு',
   'Products': 'பொருட்கள்',
-  'Customers': 'வாடிக்கையாளர்கள்',
+  'Products screen': 'பொருட்கள் திரை',
+  'Customers': 'வாடிக்கையாளர்',
   'Buy': 'வாங்கு',
-  'Sell / Quote': 'விற்பனை / மதிப்பீடு',
   'Sell': 'விற்பனை',
+  'Sell / Quote': 'விற்பனை / மதிப்பீடு',
   'Quote': 'மதிப்பீடு',
+  'Quotes': 'மதிப்பீடுகள்',
+  'Sale': 'விற்பனை',
+  'Sales': 'விற்பனைகள்',
   'History': 'வரலாறு',
   'Settings': 'அமைப்புகள்',
-  'Returns': 'திரும்பப் பெறுதல்',
-  'Return': 'திரும்பப் பெறு',
-  'Payment': 'பணம் செலுத்து',
+  'stock in': 'இருப்பு சேர்',
+  'or quote': 'அல்லது மதிப்பீடு',
+  'OUT ON CREDIT': 'கடனில்',
+  'WHO OWES YOU': 'யார் தர வேண்டும்',
+  'Everyone is settled up.': 'அனைவரும் தீர்த்துவிட்டனர்.',
+  'customer owes you': 'வாடிக்கையாளர் தர வேண்டும்',
+  'customers owe you': 'வாடிக்கையாளர்கள் தர வேண்டும்',
+  'Add a customer, then buy some stock to sell.':
+      'வாடிக்கையாளரைச் சேர்த்து, பின் இருப்பு வாங்கவும்.',
+
+  // Common actions
+  'Add': 'சேர்',
+  'Add item': 'பொருள் சேர்',
+  'All': 'எல்லாம்',
   'Save': 'சேமி',
   'Cancel': 'ரத்து',
   'Delete': 'நீக்கு',
-  'Add': 'சேர்',
   'Edit': 'திருத்து',
   'Search': 'தேடு',
+  'Search name or number': 'பெயர் அல்லது எண்',
+  'Yes': 'ஆம்',
+  'Import': 'மீட்டெடு',
+  'Fix': 'சரிசெய்',
+  'Not found': 'கிடைக்கவில்லை',
+  'Nothing here yet': 'இதுவரை எதுவும் இல்லை',
+
+  // Fields
   'Name': 'பெயர்',
   'Phone': 'தொலைபேசி',
-  'Quantity': 'எண்ணிக்கை',
-  'Cost': 'விலை (வாங்கிய)',
+  'Quantity': 'அளவு',
+  'Amount': 'தொகை',
+  'Cost': 'கொள்விலை',
   'Selling price': 'விற்பனை விலை',
   'Total': 'மொத்தம்',
   'Paid': 'செலுத்தியது',
-  'Balance': 'இருப்பு',
-  'Owes you': 'உங்களுக்கு தர வேண்டியது',
+  'Balance': 'நிலுவை',
+  'Balance due': 'நிலுவைத் தொகை',
+  'Remaining': 'மீதம்',
+  'Owes you': 'தர வேண்டியது',
   'Advance': 'முன்பணம்',
-  'Settled': 'தீர்க்கப்பட்டது',
+  'Settled': 'தீர்ந்தது',
+  'Change / advance': 'மீதம் / முன்பணம்',
+  'Note (optional)': 'குறிப்பு (விருப்பம்)',
+  'Photo': 'புகைப்படம்',
+
+  // Stock
   'Stock': 'இருப்பு',
   'Batch': 'தொகுதி',
   'Batches': 'தொகுதிகள்',
+  'Available': 'உள்ளது',
+  'available': 'உள்ளது',
+  'Only': 'மட்டும்',
+  'In stock': 'இருப்பில் உள்ளது',
+  'Out of stock': 'இருப்பு இல்லை',
+  'no stock available': 'இருப்பு இல்லை',
+  'No stock yet. Use Buy to add stock.':
+      'இருப்பு இல்லை. வாங்கு மூலம் சேர்க்கவும்.',
+  'No products yet': 'பொருட்கள் இல்லை',
+  'No customers yet': 'வாடிக்கையாளர் இல்லை',
+  'New product': 'புதிய பொருள்',
+  'New customer': 'புதிய வாடிக்கையாளர்',
+  'Choose product': 'பொருளைத் தேர்வு',
+  'Choose customer': 'வாடிக்கையாளரைத் தேர்வு',
+  'Choose batch': 'தொகுதியைத் தேர்வு',
+  'Choose a customer first': 'முதலில் வாடிக்கையாளரைத் தேர்வு செய்யவும்',
+  'Tap Add, or buy stock to create one.':
+      'சேர் தட்டவும், அல்லது இருப்பு வாங்கவும்.',
+  'Add a customer to start selling.':
+      'விற்பனை தொடங்க வாடிக்கையாளரைச் சேர்க்கவும்.',
+  'Add the products you bought.': 'வாங்கிய பொருட்களைச் சேர்க்கவும்.',
+  'Add the products you are selling.': 'விற்கும் பொருட்களைச் சேர்க்கவும்.',
+  'Show as a list': 'பட்டியலாகக் காட்டு',
+  'Show as cards': 'கார்டுகளாகக் காட்டு',
+  'Photo cards': 'படக் கார்டு',
+  'Compact list': 'சுருக்கப் பட்டியல்',
+  'Take photo': 'படம் எடு',
+  'Choose from gallery': 'கேலரியில் தேர்வு',
+
+  // Buying
+  'Purchase': 'கொள்முதல்',
+  'Purchases': 'கொள்முதல்கள்',
+  'Purchase saved': 'கொள்முதல் சேமிக்கப்பட்டது',
+  'Purchases show up here.': 'கொள்முதல்கள் இங்கே தெரியும்.',
+
+  // Selling, quoting, status
+  'Everything': 'அனைத்தும்',
+  'Convert to sale': 'விற்பனையாக மாற்று',
+  'Sale created': 'விற்பனை உருவானது',
+  'How much did they pay?': 'எவ்வளவு செலுத்தினார்?',
+  'Cancelled': 'ரத்து',
+  'Converted to sale': 'விற்பனையானது',
+  'Waiting': 'காத்திருக்கிறது',
+  'Part paid': 'பகுதி செலுத்தியது',
+  'Not paid': 'செலுத்தவில்லை',
+  'Cancel sale': 'விற்பனையை ரத்து செய்',
+  'Cancel quote': 'மதிப்பீட்டை ரத்து செய்',
+  'Cancel this quote?': 'இந்த மதிப்பீட்டை ரத்து செய்யவா?',
+  'Cancel this sale? Stock goes back and the charge is reversed.':
+      'விற்பனையை ரத்து செய்யவா? இருப்பு திரும்பும், கட்டணமும் நீங்கும்.',
+  'Sales and quotes show up here.':
+      'விற்பனைகளும் மதிப்பீடுகளும் இங்கே தெரியும்.',
+  'Includes': 'இதில்',
+  'paid after the sale': 'விற்பனைக்குப் பின் செலுத்தியது',
+
+  // Money in
+  'Payment': 'பணம்',
+  'Pay full': 'முழுவதும் செலுத்து',
+  'After payment': 'செலுத்திய பின்',
+  'Transaction history': 'பரிவர்த்தனை வரலாறு',
+  'Sale cancelled': 'விற்பனை ரத்து',
+
+  // Returns
+  'Return': 'திரும்பப் பெறு',
+  'Returns': 'திரும்பியவை',
+  'Return items': 'பொருட்கள் திரும்ப',
+  'Returned': 'திரும்பியது',
+  'Can return': 'திரும்பலாம்',
+  'How many are coming back?': 'எத்தனை திரும்புகிறது?',
+  'Credit to customer': 'வாடிக்கையாளருக்கு வரவு',
+  'From sale': 'விற்பனையிலிருந்து',
+  'Returned items show up here.': 'திரும்பிய பொருட்கள் இங்கே தெரியும்.',
+
+  // Corrections
+  'Corrections': 'திருத்தங்கள்',
+  'Fix this batch': 'இந்தத் தொகுதியைச் சரிசெய்',
+  'Batch corrected': 'தொகுதி சரிசெய்யப்பட்டது',
+  'Stock on the shelf now': 'இப்போதுள்ள இருப்பு',
+  'Received': 'பெறப்பட்டது',
+  'Gone out': 'வெளியே சென்றது',
+  'What happened? (optional)': 'என்ன நடந்தது? (விருப்பம்)',
+  'Miscount, damaged, typo…': 'எண்ணிக்கை தவறு, சேதம், பிழை…',
+  'Sales already made keep the price they were charged.':
+      'ஏற்கனவே நடந்த விற்பனைகளின் விலை மாறாது.',
+
+  // Dates and filters
+  'All time': 'எல்லா நேரமும்',
+  'Today': 'இன்று',
+  'Last 7 days': 'கடந்த 7 நாட்கள்',
+  'This month': 'இந்த மாதம்',
+  'Choose dates': 'தேதிகளைத் தேர்வு',
+
+  // Receipts
+  'Receipt': 'ரசீது',
+  'Quotation': 'மதிப்பீடு',
+
+  // Settings
   'Business name': 'வணிகப் பெயர்',
   'Business phone': 'வணிக தொலைபேசி',
-  'Export backup': 'காப்புப்பிரதி எடு',
-  'Import backup': 'காப்புப்பிரதி மீட்டெடு',
+  'These appear on your receipts': 'இவை ரசீதுகளில் தெரியும்',
   'Language': 'மொழி',
-  'Share PDF': 'PDF பகிர்',
-  'No products yet': 'பொருட்கள் இல்லை',
-  'No customers yet': 'வாடிக்கையாளர்கள் இல்லை',
-  'Nothing here yet': 'இதுவரை எதுவும் இல்லை',
+  'Backup': 'காப்புப்பிரதி',
+  'Export backup': 'காப்புப்பிரதி சேமி',
+  'Import backup': 'காப்புப்பிரதி மீட்டெடு',
+  'Backup saved': 'காப்புப்பிரதி சேமிக்கப்பட்டது',
+  'Backup restored': 'காப்புப்பிரதி மீட்கப்பட்டது',
+  'Keeps everything, including product photos.':
+      'படங்கள் உட்பட அனைத்தும் சேமிக்கப்படும்.',
+  'Importing replaces everything currently in the app. Continue?':
+      'இப்போதுள்ள அனைத்தும் மாற்றப்படும். தொடரவா?',
+  'About': 'பற்றி',
+  'App made by': 'செயலி உருவாக்கியவர்',
+  'All your data stays on this phone.':
+      'தகவல்கள் இந்த தொலைபேசியிலேயே இருக்கும்.',
+
+  // Things that go wrong
+  'Enter a valid amount': 'சரியான தொகையை உள்ளிடவும்',
+  'Enter a valid cost': 'சரியான கொள்விலையை உள்ளிடவும்',
+  'Enter a valid quantity': 'சரியான அளவை உள்ளிடவும்',
+  'Enter a valid selling price': 'சரியான விற்பனை விலையை உள்ளிடவும்',
+  'Quantity must be more than zero': 'அளவு பூஜ்ஜியத்தை விட அதிகமாக இருக்க வேண்டும்',
+  'Product name is required': 'பொருளின் பெயர் தேவை',
+  'Customer name is required': 'வாடிக்கையாளர் பெயர் தேவை',
+  'Add at least one item': 'குறைந்தது ஒரு பொருளையாவது சேர்க்கவும்',
+  'Prices cannot be negative': 'விலை எதிர்மறையாக இருக்கக்கூடாது',
+  'Quantity cannot be negative': 'அளவு எதிர்மறையாக இருக்கக்கூடாது',
+  'Payment must be more than zero': 'தொகை பூஜ்ஜியத்தை விட அதிகமாக இருக்க வேண்டும்',
+  'Payment cannot be negative': 'தொகை எதிர்மறையாக இருக்கக்கூடாது',
+  'Not enough stock': 'போதிய இருப்பு இல்லை',
+  'This quotation was already converted or cancelled':
+      'இந்த மதிப்பீடு ஏற்கனவே மாற்றப்பட்டது அல்லது ரத்தானது',
+  'Quotation not found': 'மதிப்பீடு கிடைக்கவில்லை',
+  'Sale not found': 'விற்பனை கிடைக்கவில்லை',
+  'Batch not found': 'தொகுதி கிடைக்கவில்லை',
+  'Already cancelled': 'ஏற்கனவே ரத்தானது',
+  'This sale is cancelled': 'இந்த விற்பனை ரத்தானது',
+  'Choose at least one item to return':
+      'திரும்பப் பெற ஒரு பொருளையாவது தேர்வு செய்யவும்',
+  'Item not in this sale': 'இந்தப் பொருள் இந்த விற்பனையில் இல்லை',
+  'Nothing changed': 'எதுவும் மாறவில்லை',
+  'This file is not a valid backup': 'இது சரியான காப்புப்பிரதி கோப்பு அல்ல',
+  'Can be returned at most': 'அதிகபட்சம் திரும்பப் பெறலாம்',
+  'Return quantity is too high': 'திரும்பப் பெறும் அளவு அதிகம்',
+  'This product is used in sales or quotes and cannot be deleted':
+      'இந்தப் பொருள் விற்பனையில் உள்ளது, நீக்க முடியாது',
+  'This customer has transactions and cannot be deleted':
+      'இந்த வாடிக்கையாளருக்கு பரிவர்த்தனைகள் உள்ளன, நீக்க முடியாது',
 };
 
 // ---------------------------------------------------------------- colours
@@ -160,6 +344,19 @@ class EmptyState extends StatelessWidget {
       );
 }
 
+/// A label that shrinks instead of clipping. Tamil renders longer than
+/// English, and a tab or a segmented button cannot grow to meet it.
+class Fit extends StatelessWidget {
+  final String text;
+  const Fit(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) => FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(text, maxLines: 1, softWrap: false),
+      );
+}
+
 void toast(BuildContext c, String msg, {bool bad = false}) {
   ScaffoldMessenger.of(c)
     ..hideCurrentSnackBar()
@@ -189,7 +386,9 @@ Future<T?> guard<T>(BuildContext c, Future<T> Function() f) async {
   try {
     return await f();
   } catch (e) {
-    if (c.mounted) toast(c, e.toString().replaceFirst('Exception: ', ''), bad: true);
+    if (c.mounted) {
+      toast(c, tMessage(e.toString().replaceFirst('Exception: ', '')), bad: true);
+    }
     return null;
   }
 }

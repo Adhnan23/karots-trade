@@ -68,11 +68,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               segments: [
                 ButtonSegment(
                     value: 'cards',
-                    label: Text(t('Photo cards')),
+                    label: Fit(t('Photo cards')),
                     icon: const Icon(Icons.grid_view)),
                 ButtonSegment(
                     value: 'list',
-                    label: Text(t('Compact list')),
+                    label: Fit(t('Compact list')),
                     icon: const Icon(Icons.view_list)),
               ],
               selected: {s.productsAsCards ? 'cards' : 'list'},
@@ -91,8 +91,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   selectedBackgroundColor: C.settings,
                   selectedForegroundColor: Colors.white),
               segments: const [
-                ButtonSegment(value: 'en', label: Text('English')),
-                ButtonSegment(value: 'ta', label: Text('தமிழ்')),
+                ButtonSegment(value: 'en', label: Fit('English')),
+                ButtonSegment(value: 'ta', label: Fit('தமிழ்')),
               ],
               selected: {locale.value},
               onSelectionChanged: (v) async {

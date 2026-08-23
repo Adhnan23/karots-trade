@@ -171,7 +171,8 @@ void main() {
 
     expect((await products()).length, 3);
     expect((await adjustments()), isEmpty);
-    expect((await docs()).first.advanceUsed, 0, reason: 'defaults, does not crash');
+    expect((await docs()).first.settled, isNonNegative,
+        reason: 'settlement is derived, so an old file loses nothing');
     final cust = (await customers(q: 'ABC')).single;
     expect(await balance(cust.id), cust.balance);
   });

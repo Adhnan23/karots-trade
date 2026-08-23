@@ -94,10 +94,10 @@ class _SellScreenState extends State<SellScreen> {
                 selectedForegroundColor: Colors.white),
             segments: [
               ButtonSegment(
-                  value: false, label: Text(t('Sell')), icon: const Icon(Icons.sell)),
+                  value: false, label: Fit(t('Sell')), icon: const Icon(Icons.sell)),
               ButtonSegment(
                   value: true,
-                  label: Text(t('Quote')),
+                  label: Fit(t('Quote')),
                   icon: const Icon(Icons.description)),
             ],
             selected: {_quote},

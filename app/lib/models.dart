@@ -52,16 +52,23 @@ class Customer {
 class Doc {
   final String id, kind, status, customerId, customerName, customerPhone, note;
   final String? fromQuote;
-  final int no, total, paid, advanceUsed, createdAt;
+  final int no, total, createdAt;
+
+  /// Cash taken at the counter when the sale was written. Kept as a record of
+  /// that moment; it is [settled] that says whether the bill is clear.
+  final int paid;
+
+  /// How much of this sale the customer's account has covered, counting every
+  /// payment before and since. Derived by the store, never stored.
+  final int settled;
 
   bool get isQuote => kind == 'quote';
   bool get isCancelled => status == 'cancelled';
   bool get isConverted => status == 'completed';
-
-  /// Money the customer already had on account when this sale was made counts
-  /// as settled — otherwise a sale covered by an advance reads as "Not paid".
-  int get settled => paid + advanceUsed;
   int get due => total - settled;
+
+  /// True when money that arrived after the sale finished paying it off.
+  bool get settledLater => settled > paid;
 
   Doc.fromRow(SqlRow r)
       : id = _s(r['id']),
@@ -75,7 +82,7 @@ class Doc {
         no = _i(r['no']),
         total = _i(r['total']),
         paid = _i(r['paid']),
-        advanceUsed = _i(r['advance_used']),
+        settled = _i(r['settled']),
         createdAt = _i(r['created_at']);
 }
 

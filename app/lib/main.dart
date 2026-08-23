@@ -171,7 +171,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     _Tile(t('Products'), '${stats?.products ?? '–'}', Icons.inventory_2,
                         C.products, () => _go(const ProductsScreen())),
                     const SizedBox(width: 10),
-                    _Tile(t('In stock'), '${stats?.stock ?? '–'}', Icons.layers, C.buy,
+                    _Tile(t('Stock'), '${stats?.stock ?? '–'}', Icons.layers, C.buy,
                         () => _go(const ProductsScreen())),
                     const SizedBox(width: 10),
                     _Tile(t('Customers'), '${stats?.customers ?? '–'}', Icons.people,
@@ -314,7 +314,7 @@ class _Tile extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             onTap: onTap,
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
               child: Column(children: [
                 Icon(icon, size: 22, color: color),
                 const SizedBox(height: 6),
@@ -326,10 +326,18 @@ class _Tile extends StatelessWidget {
                         color: color,
                         fontFeatures: const [FontFeature.tabularFigures()],
                       )),
-                Text(label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                // Tamil labels run longer than English; two lines and a shrink
+                // to fit beats a word cut off mid-letter.
+                SizedBox(
+                  height: 30,
+                  child: Center(
+                    child: Text(label,
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 11, height: 1.25, color: Colors.black54)),
+                  ),
+                ),
               ]),
             ),
           ),

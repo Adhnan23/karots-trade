@@ -154,12 +154,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   indicatorColor: Colors.white,
                   labelColor: Colors.white,
                   unselectedLabelColor: Colors.white70,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
                   labelStyle:
                       const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                   tabs: [
-                    Tab(text: t('Sales')),
-                    Tab(text: t('Returns')),
-                    Tab(text: t('Purchases')),
+                    Tab(child: Fit(t('Sales'))),
+                    Tab(child: Fit(t('Returns'))),
+                    Tab(child: Fit(t('Purchases'))),
                   ],
                 ),
               ]),
@@ -299,8 +300,6 @@ class StatusChip extends StatelessWidget {
       _ when d.isCancelled => ('Cancelled', Colors.grey),
       _ when d.isQuote && d.isConverted => ('Converted to sale', C.buy),
       _ when d.isQuote => ('Waiting', C.quote),
-      _ when d.due <= 0 && d.paid == 0 && d.advanceUsed > 0 =>
-        ('Paid from advance', C.buy),
       _ when d.due <= 0 => ('Paid', C.buy),
       _ when d.settled > 0 => ('Part paid', C.sell),
       _ => ('Not paid', C.owe),
@@ -352,8 +351,7 @@ class _DocScreenState extends State<DocScreen> {
         lines: [for (final i in items) (i.name, i.qty, i.price)],
         totals: [
           ('Total', d.total),
-          if (!d.isQuote && d.paid > 0) ('Paid now', d.paid),
-          if (!d.isQuote && d.advanceUsed > 0) ('From advance', d.advanceUsed),
+          if (!d.isQuote) ('Paid', d.settled),
           if (!d.isQuote) (d.due > 0 ? 'Balance due' : 'Settled', d.due),
         ],
         footnote: d.isCancelled
@@ -445,9 +443,14 @@ class _DocScreenState extends State<DocScreen> {
               const SizedBox(height: 10),
               _TotalRow(t('Total'), d.total, big: true, color: color),
               if (!d.isQuote) ...[
-                if (d.paid > 0) _TotalRow(t('Paid now'), d.paid, color: C.advance),
-                if (d.advanceUsed > 0)
-                  _TotalRow(t('Paid from advance'), d.advanceUsed, color: C.advance),
+                _TotalRow(t('Paid'), d.settled, color: C.advance),
+                if (d.settledLater)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                        '${t('Includes')} ${money(d.settled - d.paid)} ${t('paid after the sale')}',
+                        style: const TextStyle(fontSize: 13, color: Colors.black45)),
+                  ),
                 _TotalRow(d.due > 0 ? t('Balance due') : t('Settled'), d.due.abs(),
                     color: d.due > 0 ? C.owe : C.advance),
               ],

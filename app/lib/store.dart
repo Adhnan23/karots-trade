@@ -357,6 +357,26 @@ Future<String> recordPayment(String customerId, int amount, {String note = ''}) 
 
 // ============================================================ sales & quotes
 
+/// A customer runs one account, not one account per bill. Money coming in
+/// clears the oldest unpaid sale first, so a sale counts as settled once the
+/// credits on the account reach it.
+///
+/// Derived rather than stored, which is what makes a later payment finish off
+/// an earlier part-paid sale — and makes an advance paid before the sale was
+/// even written settle it too, with no special case for either.
+const _settled = '''
+    CASE WHEN d.kind = 'sale' AND d.status <> 'cancelled' THEN
+      MAX(0, MIN(d.total,
+        IFNULL((SELECT -SUM(l.amount) FROM ledger l
+                 WHERE l.customer_id = d.customer_id
+                   AND l.amount < 0 AND l.type <> 'sale_cancelled'), 0)
+        - IFNULL((SELECT SUM(e.total) FROM docs e
+                   WHERE e.customer_id = d.customer_id AND e.kind = 'sale'
+                     AND e.status <> 'cancelled'
+                     AND (e.created_at < d.created_at
+                          OR (e.created_at = d.created_at AND e.rowid < d.rowid))), 0)))
+    ELSE 0 END settled''';
+
 Future<List<Doc>> docs({
   String? customerId,
   String? kind,
@@ -388,7 +408,7 @@ Future<List<Doc>> docs({
     a.add(to.millisecondsSinceEpoch);
   }
   return (await db.rawQuery('''
-      SELECT d.*, c.name customer_name, c.phone customer_phone
+      SELECT d.*, c.name customer_name, c.phone customer_phone, $_settled
       FROM docs d JOIN customers c ON c.id = d.customer_id
       ${w.isEmpty ? '' : 'WHERE ${w.join(' AND ')}'}
       ORDER BY d.created_at DESC LIMIT $limit''', a))
@@ -398,7 +418,7 @@ Future<List<Doc>> docs({
 
 Future<Doc?> doc(String id) async {
   final r = await db.rawQuery('''
-      SELECT d.*, c.name customer_name, c.phone customer_phone
+      SELECT d.*, c.name customer_name, c.phone customer_phone, $_settled
       FROM docs d JOIN customers c ON c.id = d.customer_id WHERE d.id = ?''', [id]);
   return r.isEmpty ? null : Doc.fromRow(r.first);
 }
@@ -433,20 +453,6 @@ Future<String> saveDoc({
   await db.transaction((tx) async {
     final now = _now();
 
-    // Money the customer already left with us settles this sale straight away.
-    // It is already a credit on the ledger, so nothing extra is posted — the
-    // amount is only recorded on the sale so it does not read as unpaid.
-    var advanceUsed = 0;
-    if (!quote) {
-      final bal = ((await tx.rawQuery(
-                  'SELECT IFNULL(SUM(amount),0) b FROM ledger WHERE customer_id = ?',
-                  [customerId]))
-              .first['b'] as num)
-          .toInt();
-      final owing = total - paid;
-      if (bal < 0 && owing > 0) advanceUsed = owing < -bal ? owing : -bal;
-    }
-
     // Claim the quotation first: if another conversion already happened this
     // updates nothing and the whole transaction rolls back.
     if (fromQuote != null) {
@@ -466,7 +472,6 @@ Future<String> saveDoc({
       'customer_id': customerId,
       'total': total,
       'paid': quote ? 0 : paid,
-      'advance_used': advanceUsed,
       'from_quote': fromQuote,
       'note': note,
       'created_at': now,
@@ -488,7 +493,7 @@ Future<String> saveDoc({
         final ok = await tx.rawUpdate(
             'UPDATE batches SET qty_left = qty_left - ? WHERE id = ? AND qty_left >= ?',
             [l.qty, l.batchId, l.qty]);
-        if (ok != 1) throw Exception('Not enough stock for ${l.name}');
+        if (ok != 1) throw Exception('Not enough stock: ${l.name}');
       }
     }
 
@@ -605,7 +610,7 @@ Future<String> saveReturn(String docId, Map<String, int> qtyByItemId) async {
     final i = items[e.key];
     if (i == null) throw Exception('Item not in this sale');
     if (e.value > i.returnable) {
-      throw Exception('Only ${i.returnable} of ${i.name} can be returned');
+      throw Exception('Can be returned at most: ${i.returnable} ${i.name}');
     }
   }
 
@@ -628,7 +633,7 @@ Future<String> saveReturn(String docId, Map<String, int> qtyByItemId) async {
       final ok = await tx.rawUpdate(
           'UPDATE doc_items SET returned = returned + ? WHERE id = ? AND returned + ? <= qty',
           [e.value, i.id, e.value]);
-      if (ok != 1) throw Exception('Return quantity is too high for ${i.name}');
+      if (ok != 1) throw Exception('Return quantity is too high: ${i.name}');
 
       await tx.rawUpdate(
           'UPDATE batches SET qty_left = qty_left + ? WHERE id = ?', [e.value, i.batchId]);
