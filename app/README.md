@@ -12,7 +12,17 @@ flutter test             # business-rule tests (21)
 flutter build apk --release
 ```
 
-The APK lands in `build/app/outputs/flutter-apk/`.
+`flutter build apk --release` produces one **universal** APK (arm64-v8a,
+armeabi-v7a, x86_64) in `build/app/outputs/flutter-apk/app-release.apk`.
+
+## Signing
+
+Release builds are signed with `android/karots-release.jks`, configured by
+`android/key.properties`. Neither is committed. **Keep a private copy of both.**
+If that keystore is lost, no future build can install over an app already on a
+phone — the only way back is uninstall and reinstall, which wipes the database
+unless a backup was exported first. Without `key.properties` the build falls
+back to the debug key so `flutter run --release` still works on a fresh clone.
 
 ## What the app does
 
@@ -75,6 +85,8 @@ UI never touches SQL — screens call `store.dart` only.
 - **PDF receipts are English only.** Tamil in a PDF needs a bundled Tamil font; the app
   UI switches language, the receipts do not.
 - Purchases record no supplier debt, by design.
+- **Package id is `com.karots.karots_trade`.** Changing it makes Android treat
+  the result as a different app: separate install, empty database. Leave it.
 - **Never write `setState(() => _future = load())`.** The arrow returns the Future,
   `setState` asserts against that, and the rebuild is silently skipped in debug. Use a
   statement body. This shape broke every list and counter in the first version.
