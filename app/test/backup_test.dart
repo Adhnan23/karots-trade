@@ -57,6 +57,20 @@ Future<void> seed() async {
 
   await fixBatch(colaBatches[1].id, qty: 9, cost: rs(160), price: rs(195),
       reason: 'One case damaged');
+
+  // One cheque still waiting on the bank, one that came good.
+  await saveCheque(
+      customerId: abc,
+      chequeNo: '400123',
+      bank: 'Sampath',
+      amount: rs(1500),
+      dueAt: DateTime.now().add(const Duration(days: 10)).millisecondsSinceEpoch);
+  final banked = await saveCheque(
+      customerId: nimal,
+      chequeNo: '400124',
+      amount: rs(500),
+      dueAt: DateTime.now().millisecondsSinceEpoch);
+  await clearCheque(banked);
 }
 
 /// Everything in the database, as comparable plain values.

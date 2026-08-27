@@ -20,7 +20,7 @@ Future<Database> openDb({String? path}) async {
   _db = await databaseFactory.openDatabase(
     file,
     options: OpenDatabaseOptions(
-      version: 3,
+      version: 4,
       onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
       onCreate: (d, _) async {
         for (final s in schema) {
@@ -63,6 +63,9 @@ const tables = [
   'return_items',
   'ledger',
   'adjustments',
+  // After ledger and customers: a restore inserts in this order, and the
+  // wipe before it deletes in reverse, so the references always hold.
+  'cheques',
   'settings',
 ];
 
@@ -126,7 +129,10 @@ const schema = [
       batch_id TEXT NOT NULL,
       name TEXT NOT NULL,               -- captured at sale time
       qty INTEGER NOT NULL,
-      price INTEGER NOT NULL,           -- captured at sale time, never re-read
+      price INTEGER NOT NULL,           -- what was actually charged
+      -- The normal price before any discount, so a receipt can show what the
+      -- customer was let off. 0 on rows written before discounts existed.
+      list_price INTEGER NOT NULL DEFAULT 0,
       returned INTEGER NOT NULL DEFAULT 0)''',
   'CREATE INDEX ix_items_doc ON doc_items(doc_id)',
   '''CREATE TABLE returns(
@@ -173,7 +179,28 @@ const schema = [
       reason TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL)''',
   'CREATE INDEX ix_adj_product ON adjustments(product_id)',
+  ..._cheques,
   'CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+];
+
+/// A cheque is a promise of money, not money. It deliberately lives outside
+/// `ledger`, so a customer's balance never counts what the bank has not paid;
+/// clearing it writes the ledger row, and bouncing it writes nothing at all.
+const _cheques = [
+  '''CREATE TABLE cheques(
+      id TEXT PRIMARY KEY,
+      no INTEGER NOT NULL,
+      customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      cheque_no TEXT NOT NULL,          -- the number printed on the cheque
+      bank TEXT NOT NULL DEFAULT '',
+      amount INTEGER NOT NULL,
+      due_at INTEGER NOT NULL,          -- the date written on it: bank it then
+      status TEXT NOT NULL,             -- pending | cleared | bounced
+      ledger_id TEXT,                   -- the payment row, only once cleared
+      note TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      settled_at INTEGER)''',
+  'CREATE INDEX ix_cheque_customer ON cheques(customer_id)',
 ];
 
 /// Applied in order when an existing database is opened at an older version.
@@ -198,5 +225,9 @@ const migrations = <int, List<String>>{
         reason TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL)''',
     'CREATE INDEX ix_adj_product ON adjustments(product_id)',
+  ],
+  4: [
+    ..._cheques,
+    'ALTER TABLE doc_items ADD COLUMN list_price INTEGER NOT NULL DEFAULT 0',
   ],
 };

@@ -526,6 +526,283 @@ void main() {
 
     expect((await ledger(cid)).length, 4, reason: 'sale, payment, payment, return');
   });
+
+  group('deleting cannot destroy money or stock', () {
+    test('a customer holding an advance is not deletable', () async {
+      final c = await saveCustomer(name: 'Paid ahead');
+      await recordPayment(c, rs(5000));
+
+      expect(() => deleteCustomer(c), throwsA(isA<Exception>()));
+
+      expect((await customers()).length, 1);
+      expect(await balance(c), -rs(5000), reason: 'the money is still on the books');
+    });
+
+    test('a customer with only a waiting cheque is not deletable', () async {
+      final c = await saveCustomer(name: 'Gave a cheque');
+      await saveCheque(
+          customerId: c, chequeNo: '400123', amount: rs(1000), dueAt: 0);
+
+      expect(() => deleteCustomer(c), throwsA(isA<Exception>()));
+      expect(await cheques(), hasLength(1));
+    });
+
+    test('a customer who never traded still goes', () async {
+      final c = await saveCustomer(name: 'Typed by mistake');
+      await deleteCustomer(c);
+      expect(await customers(), isEmpty);
+    });
+
+    test('a product with stock on the shelf is not deletable', () async {
+      final pid = await buy('Rice 5kg', cost: rs(1000), price: rs(1300), qty: 40);
+
+      expect(() => deleteProduct(pid), throwsA(isA<Exception>()));
+
+      expect((await product(pid))!.stock, 40, reason: 'the stock is still there');
+      expect((await stats()).stock, 40);
+      expect((await batches(pid)), hasLength(1));
+    });
+
+    test('a product sold out but with history is not deletable', () async {
+      final pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 1);
+      final cid = await saveCustomer(name: 'ABC');
+      final b = (await batches(pid)).first;
+      await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(productId: pid, batchId: b.id, name: 'Soap', price: rs(70))
+      ]);
+
+      expect((await product(pid))!.stock, 0);
+      expect(() => deleteProduct(pid), throwsA(isA<Exception>()));
+    });
+
+    test('a product typed by mistake and never bought still goes', () async {
+      final pid = await saveProduct(name: 'Wrong name');
+      await deleteProduct(pid);
+      expect(await products(), isEmpty);
+    });
+  });
+
+  group('discounts', () {
+    late String pid, cid, bid;
+
+    setUp(() async {
+      pid = await buy('Coca-Cola 1L', cost: rs(850), price: rs(900), qty: 10);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'Regular');
+    });
+
+    SellLine line(int price, {int qty = 1, int listPrice = 0}) => SellLine(
+        productId: pid,
+        batchId: bid,
+        name: 'Coca-Cola 1L',
+        price: price,
+        listPrice: listPrice,
+        qty: qty);
+
+    test('a friend price is charged, and the normal price is remembered',
+        () async {
+      final id =
+          await saveDoc(customerId: cid, quote: false, lines: [line(rs(875), qty: 4)]);
+
+      final d = (await doc(id))!;
+      expect(d.total, rs(3500), reason: '4 x 875, not 4 x 900');
+      expect(await balance(cid), rs(3500), reason: 'the account is charged what was agreed');
+
+      final i = (await docItems(id)).single;
+      expect(i.price, rs(875));
+      expect(i.listPrice, rs(900));
+      expect(i.discount, rs(100), reason: 'Rs. 25 off each, four of them');
+    });
+
+    test('the full price leaves no discount to print', () async {
+      final id = await saveDoc(customerId: cid, quote: false, lines: [line(rs(900))]);
+      expect((await docItems(id)).single.discount, 0);
+    });
+
+    test('the list price falls back to the batch when none is given', () async {
+      final id = await saveDoc(customerId: cid, quote: false, lines: [line(rs(880))]);
+      expect((await docItems(id)).single.listPrice, rs(900));
+    });
+
+    test('selling under cost is refused, and nothing is left behind', () async {
+      expect(
+          () => saveDoc(customerId: cid, quote: false, lines: [line(rs(849))]),
+          throwsA(isA<Exception>()));
+
+      expect(await docs(), isEmpty, reason: 'the whole sale rolled back');
+      expect((await batches(pid)).first.qtyLeft, 10, reason: 'stock untouched');
+      expect(await balance(cid), 0);
+    });
+
+    test('selling exactly at cost is allowed', () async {
+      final id = await saveDoc(customerId: cid, quote: false, lines: [line(rs(850))]);
+      expect((await doc(id))!.total, rs(850));
+    });
+
+    test('a quotation is held to the same floor', () async {
+      expect(() => saveDoc(customerId: cid, quote: true, lines: [line(rs(800))]),
+          throwsA(isA<Exception>()));
+    });
+
+    test('a discounted quote keeps its price when it becomes a sale', () async {
+      final q =
+          await saveDoc(customerId: cid, quote: true, lines: [line(rs(875), qty: 2)]);
+      final sale = await convertQuote(q);
+
+      final i = (await docItems(sale)).single;
+      expect(i.price, rs(875));
+      expect(i.listPrice, rs(900), reason: 'the discount quoted is the discount billed');
+      expect((await doc(sale))!.total, rs(1750));
+    });
+
+    test('a cost correction cannot strand an agreed quote at the counter',
+        () async {
+      final q = await saveDoc(customerId: cid, quote: true, lines: [line(rs(875))]);
+
+      // The cost was typed wrong and gets fixed to above the quoted price.
+      await fixBatch(bid, qty: 10, cost: rs(880), price: rs(900), reason: 'Typo');
+
+      final sale = await convertQuote(q);
+      expect((await doc(sale))!.total, rs(875), reason: 'the promise is honoured');
+
+      // A brand new sale at that price is still refused.
+      expect(() => saveDoc(customerId: cid, quote: false, lines: [line(rs(875))]),
+          throwsA(isA<Exception>()));
+    });
+
+    test('a discounted line is credited back at the discounted price', () async {
+      final id =
+          await saveDoc(customerId: cid, quote: false, lines: [line(rs(875), qty: 4)]);
+      final item = (await docItems(id)).single;
+
+      await saveReturn(id, {item.id: 2});
+      expect(await balance(cid), rs(3500) - rs(1750),
+          reason: 'refunded what was charged, not the shelf price');
+    });
+  });
+
+  group('cheques', () {
+    late String cid, pid, bid;
+
+    Future<String> aCheque({int amount = 5000, String no = '400123'}) => saveCheque(
+        customerId: cid,
+        chequeNo: no,
+        amount: amount,
+        bank: 'Sampath',
+        dueAt: DateTime.now().add(const Duration(days: 7)).millisecondsSinceEpoch);
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 20);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+      await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: 10)
+      ]);
+    });
+
+    test('a cheque taken in does not reduce what is owed', () async {
+      final owed = await balance(cid);
+      await aCheque(amount: rs(400));
+
+      expect(await balance(cid), owed, reason: 'a promise is not money');
+      expect(await ledger(cid), hasLength(1), reason: 'only the sale is on the ledger');
+      expect((await stats()).cheques, rs(400), reason: 'but it is visible as waiting');
+    });
+
+    test('banking it credits the account and settles the bill', () async {
+      final owed = await balance(cid);
+      final id = await aCheque(amount: owed);
+
+      await clearCheque(id);
+
+      expect(await balance(cid), 0);
+      expect((await oneCheque(id))!.isCleared, isTrue);
+      expect((await docs(kind: 'sale')).single.due, 0,
+          reason: 'the cheque settled the sale like any other payment');
+      expect((await stats()).cheques, 0, reason: 'no longer waiting');
+    });
+
+    test('a banked cheque leaves a numbered payment that can be reprinted',
+        () async {
+      final id = await aCheque(amount: rs(400));
+      final ledgerId = await clearCheque(id);
+
+      final e = (await ledgerEntry(ledgerId))!;
+      expect(e.type, 'payment');
+      expect(e.amount, -rs(400));
+      expect(e.no, greaterThan(0), reason: 'a receipt number to hand over');
+      expect(e.note, contains('400123'), reason: 'says which cheque it was');
+      expect((await oneCheque(id))!.ledgerId, ledgerId);
+    });
+
+    test('a bounced cheque has nothing to unwind', () async {
+      final owed = await balance(cid);
+      final id = await aCheque(amount: rs(400));
+
+      await bounceCheque(id);
+
+      expect(await balance(cid), owed, reason: 'they still owe exactly what they did');
+      expect(await ledger(cid), hasLength(1), reason: 'no reversal entry needed');
+      expect((await oneCheque(id))!.isBounced, isTrue);
+      expect((await stats()).cheques, 0);
+    });
+
+    test('banking the same cheque twice cannot credit it twice', () async {
+      final id = await aCheque(amount: rs(400));
+      await clearCheque(id);
+      final after = await balance(cid);
+
+      expect(() => clearCheque(id), throwsA(isA<Exception>()));
+
+      expect(await balance(cid), after);
+      expect(await ledger(cid), hasLength(2), reason: 'sale and one payment only');
+    });
+
+    test('a bounced cheque can be presented again', () async {
+      final id = await aCheque(amount: rs(400));
+      await bounceCheque(id);
+      await clearCheque(id);
+
+      expect((await oneCheque(id))!.isCleared, isTrue);
+      expect(await balance(cid), rs(700) - rs(400));
+    });
+
+    test('a cheque already banked cannot be marked returned', () async {
+      final id = await aCheque(amount: rs(400));
+      await clearCheque(id);
+      expect(() => bounceCheque(id), throwsA(isA<Exception>()));
+    });
+
+    test('a cheque needs a number and a real amount', () async {
+      expect(
+          () => saveCheque(
+              customerId: cid, chequeNo: '  ', amount: rs(100), dueAt: 0),
+          throwsA(isA<Exception>()));
+      expect(
+          () => saveCheque(
+              customerId: cid, chequeNo: '400123', amount: 0, dueAt: 0),
+          throwsA(isA<Exception>()));
+      expect(await cheques(), isEmpty);
+    });
+
+    test('waiting cheques come first, nearest banking date at the top',
+        () async {
+      final now = DateTime.now();
+      int inDays(int d) => now.add(Duration(days: d)).millisecondsSinceEpoch;
+
+      final far = await saveCheque(
+          customerId: cid, chequeNo: 'A', amount: rs(100), dueAt: inDays(30));
+      final soon = await saveCheque(
+          customerId: cid, chequeNo: 'B', amount: rs(100), dueAt: inDays(2));
+      final done = await saveCheque(
+          customerId: cid, chequeNo: 'C', amount: rs(100), dueAt: inDays(1));
+      await clearCheque(done);
+
+      expect((await cheques()).map((c) => c.id).toList(), [soon, far, done]);
+      expect((await cheques(status: 'pending')).map((c) => c.chequeNo), ['B', 'A']);
+      expect((await cheques(q: 'Sampath')), isEmpty, reason: 'these had no bank set');
+    });
+  });
 }
 
 Future<Map<String, String>> allSettingsMap() async {

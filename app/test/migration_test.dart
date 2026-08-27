@@ -80,6 +80,10 @@ void main() {
       'id': 'd1', 'no': 1, 'kind': 'sale', 'status': 'active', 'customer_id': 'c1',
       'total': 180000, 'paid': 100000, 'created_at': now,
     });
+    await old.insert('doc_items', {
+      'id': 'i1', 'doc_id': 'd1', 'product_id': 'p1', 'batch_id': 'b1',
+      'name': 'Coca-Cola 1L', 'qty': 10, 'price': 18000,
+    });
     await old.insert('ledger', {
       'id': 'l1', 'customer_id': 'c1', 'type': 'sale', 'amount': 180000,
       'ref_id': 'd1', 'created_at': now,
@@ -110,5 +114,19 @@ void main() {
     final pay = await recordPayment('c1', 50000);
     expect((await ledgerEntry(pay))!.no, 1);
     expect(await balance('c1'), 30000);
+
+    // Cheques and discounts arrived later; the old sale simply has neither.
+    expect((await docItems('d1')).single.discount, 0,
+        reason: 'a line written before discounts existed is not a discount');
+    expect(await cheques(), isEmpty);
+
+    final ch = await saveCheque(
+        customerId: 'c1',
+        chequeNo: '400123',
+        amount: 30000,
+        dueAt: DateTime.now().millisecondsSinceEpoch);
+    expect(await balance('c1'), 30000, reason: 'still owed until it clears');
+    await clearCheque(ch);
+    expect(await balance('c1'), 0);
   });
 }

@@ -67,13 +67,21 @@ Future<String> saveProduct(
   return id;
 }
 
-/// A product can only go away if it never took part in any transaction.
+/// A product can only go away if it never took part in anything.
+///
+/// Stock counts as taking part: `batches` cascade-deletes with the product, so
+/// deleting one that was ever bought in would quietly take its stock — and the
+/// money that stock is worth — with it. Use a batch correction to zero it out
+/// instead; that leaves a record. A product typed by mistake and never bought
+/// has no batches, so it still deletes cleanly.
 Future<void> deleteProduct(String id) async {
-  final used = (await db.rawQuery(
-          'SELECT COUNT(*) n FROM doc_items WHERE product_id = ?', [id]))
-      .first['n'] as int;
+  final used = (await db.rawQuery('''
+      SELECT (SELECT COUNT(*) FROM doc_items WHERE product_id = ?)
+           + (SELECT COUNT(*) FROM batches WHERE product_id = ?)
+           + (SELECT COUNT(*) FROM purchase_items WHERE product_id = ?) n''',
+      [id, id, id])).first['n'] as int;
   if (used > 0) {
-    throw Exception('This product is used in sales or quotes and cannot be deleted');
+    throw Exception('This product has been bought or sold and cannot be deleted');
   }
   await db.delete('products', where: 'id = ?', whereArgs: [id]);
 }
@@ -300,9 +308,17 @@ Future<String> saveCustomer({String? id, required String name, String phone = ''
   return id;
 }
 
+/// Only a customer with no history at all can be removed.
+///
+/// The ledger and cheques both cascade-delete with the customer, so an account
+/// holding an advance — money already handed over — would disappear along with
+/// them if `docs` were the only thing checked.
 Future<void> deleteCustomer(String id) async {
-  final used = (await db.rawQuery(
-          'SELECT COUNT(*) n FROM docs WHERE customer_id = ?', [id])).first['n'] as int;
+  final used = (await db.rawQuery('''
+      SELECT (SELECT COUNT(*) FROM docs WHERE customer_id = ?)
+           + (SELECT COUNT(*) FROM ledger WHERE customer_id = ?)
+           + (SELECT COUNT(*) FROM cheques WHERE customer_id = ?) n''',
+      [id, id, id])).first['n'] as int;
   if (used > 0) {
     throw Exception('This customer has transactions and cannot be deleted');
   }
@@ -353,6 +369,138 @@ Future<String> recordPayment(String customerId, int amount, {String note = ''}) 
     });
   });
   return id;
+}
+
+// ============================================================ cheques
+
+/// Records a cheque handed over as payment.
+///
+/// Nothing goes to the ledger: until the bank pays, the customer still owes the
+/// money, and the balance has to keep saying so. That single decision is what
+/// makes [bounceCheque] free — there is nothing to unwind.
+Future<String> saveCheque({
+  required String customerId,
+  required String chequeNo,
+  required int amount,
+  required int dueAt,
+  String bank = '',
+  String note = '',
+}) async {
+  if (amount <= 0) throw Exception('Payment must be more than zero');
+  if (chequeNo.trim().isEmpty) throw Exception('Cheque number is required');
+
+  final id = uid();
+  await db.transaction((tx) async {
+    await tx.insert('cheques', {
+      'id': id,
+      'no': await _nextNo(tx, 'cheques'),
+      'customer_id': customerId,
+      'cheque_no': chequeNo.trim(),
+      'bank': bank.trim(),
+      'amount': amount,
+      'due_at': dueAt,
+      'status': 'pending',
+      'note': note.trim(),
+      'created_at': _now(),
+    });
+  });
+  return id;
+}
+
+/// The bank paid. Only now does the money reach the ledger, where it settles
+/// the oldest unpaid bill like any other payment.
+///
+/// The status guard is what makes a double tap harmless: the second attempt
+/// updates no rows and the whole transaction rolls back, so a cheque can never
+/// be credited twice.
+Future<String> clearCheque(String id) async {
+  final ledgerId = uid();
+  await db.transaction((tx) async {
+    final rows = await tx.rawQuery('''
+        SELECT h.*, c.name customer_name, c.phone customer_phone
+        FROM cheques h JOIN customers c ON c.id = h.customer_id
+        WHERE h.id = ?''', [id]);
+    if (rows.isEmpty) throw Exception('Cheque not found');
+    final ch = Cheque.fromRow(rows.first);
+
+    final now = _now();
+    final ok = await tx.rawUpdate(
+        "UPDATE cheques SET status = 'cleared', ledger_id = ?, settled_at = ? "
+        "WHERE id = ? AND status <> 'cleared'",
+        [ledgerId, now, id]);
+    if (ok != 1) throw Exception('This cheque is already banked');
+
+    await tx.insert('ledger', {
+      'id': ledgerId,
+      'no': await _nextNo(tx, 'ledger', "type = 'payment'"),
+      'customer_id': ch.customerId,
+      'type': 'payment',
+      'amount': -ch.amount,
+      'ref_id': id,
+      'note': 'Cheque ${ch.chequeNo}',
+      'created_at': now,
+    });
+  });
+  return ledgerId;
+}
+
+/// The bank sent it back. Nothing is reversed, because a waiting cheque never
+/// touched the ledger — the customer simply still owes what they always owed.
+/// A returned cheque can still be cleared later if it is presented again.
+Future<void> bounceCheque(String id) async {
+  final ok = await db.rawUpdate(
+      "UPDATE cheques SET status = 'bounced', settled_at = ? WHERE id = ? AND status = 'pending'",
+      [_now(), id]);
+  if (ok != 1) throw Exception('Only a waiting cheque can be marked returned');
+}
+
+/// Waiting cheques first, the nearest banking date at the top — that is the
+/// order the seller works in. Dates filter on when the cheque was taken in, so
+/// the same date filters as the rest of History keep working on future-dated
+/// cheques.
+Future<List<Cheque>> cheques({
+  String? customerId,
+  String? status,
+  String q = '',
+  DateTime? from,
+  DateTime? to,
+}) async {
+  final w = <String>[], a = <Object?>[];
+  if (customerId != null) {
+    w.add('h.customer_id = ?');
+    a.add(customerId);
+  }
+  if (status != null) {
+    w.add('h.status = ?');
+    a.add(status);
+  }
+  if (q.trim().isNotEmpty) {
+    w.add('(c.name LIKE ? OR c.phone LIKE ? OR h.cheque_no LIKE ? OR h.bank LIKE ?)');
+    a.addAll([_like(q), _like(q), _like(q), _like(q)]);
+  }
+  if (from != null) {
+    w.add('h.created_at >= ?');
+    a.add(from.millisecondsSinceEpoch);
+  }
+  if (to != null) {
+    w.add('h.created_at <= ?');
+    a.add(to.millisecondsSinceEpoch);
+  }
+  return (await db.rawQuery('''
+      SELECT h.*, c.name customer_name, c.phone customer_phone
+      FROM cheques h JOIN customers c ON c.id = h.customer_id
+      ${w.isEmpty ? '' : 'WHERE ${w.join(' AND ')}'}
+      ORDER BY h.status = 'pending' DESC, h.due_at, h.created_at DESC''', a))
+      .map(Cheque.fromRow)
+      .toList();
+}
+
+Future<Cheque?> oneCheque(String id) async {
+  final r = await db.rawQuery('''
+      SELECT h.*, c.name customer_name, c.phone customer_phone
+      FROM cheques h JOIN customers c ON c.id = h.customer_id
+      WHERE h.id = ?''', [id]);
+  return r.isEmpty ? null : Cheque.fromRow(r.first);
 }
 
 // ============================================================ sales & quotes
@@ -478,6 +626,19 @@ Future<String> saveDoc({
     });
 
     for (final l in lines) {
+      final b = await tx.query('batches',
+          columns: ['cost', 'price'], where: 'id = ?', whereArgs: [l.batchId]);
+      if (b.isEmpty) throw Exception('Batch not found');
+      final cost = (b.first['cost'] as num).toInt();
+
+      // Giving a regular a better price is the seller's call; going under what
+      // the stock cost is not, because it reads as a sale and books as a loss.
+      // A conversion is exempt: those prices were agreed when the quote was
+      // written, and a later cost correction must not strand it at the counter.
+      if (fromQuote == null && l.price < cost) {
+        throw Exception('Price is below cost: ${l.name}');
+      }
+
       await tx.insert('doc_items', {
         'id': uid(),
         'doc_id': id,
@@ -486,6 +647,8 @@ Future<String> saveDoc({
         'name': l.name,
         'qty': l.qty,
         'price': l.price,
+        'list_price':
+            l.listPrice > 0 ? l.listPrice : (b.first['price'] as num).toInt(),
       });
 
       if (!quote) {
@@ -544,6 +707,9 @@ Future<String> convertQuote(String quoteId, {int paid = 0}) async {
             batchId: i.batchId,
             name: i.name,
             price: i.price,
+            // Carried across so the bill shows the discount that was quoted,
+            // not one re-derived from today's shelf price.
+            listPrice: i.listPrice,
             qty: i.qty))
         .toList(),
   );
@@ -737,9 +903,11 @@ Future<List<Customer>> debtors({int limit = 5}) async => (await db.rawQuery('''
     .map(Customer.fromRow)
     .toList();
 
-Future<({int products, int stock, int customers, int owed})> stats() async {
+Future<({int products, int stock, int customers, int owed, int cheques})>
+    stats() async {
   final p = await db.rawQuery(
-      'SELECT (SELECT COUNT(*) FROM products) p, (SELECT IFNULL(SUM(qty_left),0) FROM batches) s, (SELECT COUNT(*) FROM customers) c');
+      'SELECT (SELECT COUNT(*) FROM products) p, (SELECT IFNULL(SUM(qty_left),0) FROM batches) s, (SELECT COUNT(*) FROM customers) c,'
+      " (SELECT IFNULL(SUM(amount),0) FROM cheques WHERE status = 'pending') h");
   final owed = await db.rawQuery('''
       SELECT IFNULL(SUM(b),0) o FROM
         (SELECT SUM(amount) b FROM ledger GROUP BY customer_id) WHERE b > 0''');
@@ -749,5 +917,6 @@ Future<({int products, int stock, int customers, int owed})> stats() async {
     stock: (r['s'] as num).toInt(),
     customers: (r['c'] as num).toInt(),
     owed: (owed.first['o'] as num).toInt(),
+    cheques: (r['h'] as num).toInt(),
   );
 }

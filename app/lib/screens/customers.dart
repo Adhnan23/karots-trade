@@ -5,6 +5,7 @@ import '../files.dart';
 import '../models.dart';
 import '../store.dart' as s;
 import 'buy.dart' show NumField;
+import 'cheques.dart';
 import 'history.dart';
 import 'sell.dart';
 
@@ -130,13 +131,16 @@ class CustomerScreen extends StatefulWidget {
   State<CustomerScreen> createState() => _CustomerScreenState();
 }
 
-class _CustomerScreenState extends State<CustomerScreen> {
-  late Future<(Customer?, List<LedgerEntry>, List<Doc>)> _data = _load();
+typedef _CustomerData = (Customer?, List<LedgerEntry>, List<Doc>, List<Cheque>);
 
-  Future<(Customer?, List<LedgerEntry>, List<Doc>)> _load() async => (
+class _CustomerScreenState extends State<CustomerScreen> {
+  late Future<_CustomerData> _data = _load();
+
+  Future<_CustomerData> _load() async => (
         await s.customer(widget.id),
         await s.ledger(widget.id),
         await s.docs(customerId: widget.id),
+        await s.cheques(customerId: widget.id, status: 'pending'),
       );
 
   void _reload() {
@@ -160,7 +164,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
             if (!snap.hasData) {
               return const Center(child: CircularProgressIndicator());
             }
-            final (c, entries, docs) = snap.data!;
+            final (c, entries, docs, waiting) = snap.data!;
             if (c == null) return Center(child: Text(t('Not found')));
             final b = balanceLabel(c.balance);
             return ListView(padding: const EdgeInsets.all(16), children: [
@@ -208,6 +212,21 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ),
                 ),
               ]),
+              if (waiting.isNotEmpty) ...[
+                const SizedBox(height: 22),
+                Row(children: [
+                  Text(t('Cheques waiting'),
+                      style:
+                          const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                  const Spacer(),
+                  Money(waiting.fold(0, (a, h) => a + h.amount), color: C.quote),
+                ]),
+                Text(t('Not counted in the balance until the bank pays.'),
+                    style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                const SizedBox(height: 8),
+                for (final h in waiting)
+                  ChequeCard(h, showCustomer: false, onChanged: _reload),
+              ],
               const SizedBox(height: 22),
               Text(t('Transaction history'),
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
@@ -320,13 +339,14 @@ class _LedgerRow extends StatelessWidget {
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
                 color: e.amount > 0 ? C.owe : C.advance)),
+        // A payment tied to a sale opens the sale; any other payment — taken at
+        // the counter, or a cheque that finally cleared — opens its receipt.
         onTap: switch (e.type) {
-          'payment' when e.refId == null =>
-            () => showPaymentReceipt(context, customer, e.id),
           'return' => () => showReturnReceipt(context, e.refId!),
           _ when doc != null =>
             () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => DocScreen(doc!.id))),
+          'payment' => () => showPaymentReceipt(context, customer, e.id),
           _ => null,
         },
       ),
@@ -403,12 +423,59 @@ class PaymentScreen extends StatefulWidget {
 class _PaymentScreenState extends State<PaymentScreen> {
   final _amount = TextEditingController();
   final _note = TextEditingController();
+  final _chequeNo = TextEditingController();
+  final _bank = TextEditingController();
+
+  bool _byCheque = false;
+  DateTime _due = DateTime.now();
 
   @override
   void dispose() {
     _amount.dispose();
     _note.dispose();
+    _chequeNo.dispose();
+    _bank.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickDue() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _due,
+      // A post-dated cheque is normal here; an old one still needs entering.
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 2),
+    );
+    if (picked != null && mounted) setState(() => _due = picked);
+  }
+
+  Future<void> _save() async {
+    final amount = parseMoney(_amount.text) ?? 0;
+    final nav = Navigator.of(context);
+
+    if (_byCheque) {
+      final id = await guard(
+          context,
+          () => s.saveCheque(
+                customerId: widget.customer.id,
+                chequeNo: _chequeNo.text,
+                amount: amount,
+                dueAt: _due.millisecondsSinceEpoch,
+                bank: _bank.text,
+                note: _note.text.trim(),
+              ));
+      if (id == null || !mounted) return;
+      await showChequeReceipt(context, id);
+      nav.pop(true);
+      return;
+    }
+
+    final id = await guard(context,
+        () => s.recordPayment(widget.customer.id, amount, note: _note.text.trim()));
+    if (id == null || !mounted) return;
+    await showPaymentReceipt(context, widget.customer, id);
+    nav.pop(true);
   }
 
   @override
@@ -416,8 +483,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
     final owed = widget.customer.balance;
     final amount = parseMoney(_amount.text) ?? 0;
     final after = owed - amount;
+    final color = _byCheque ? C.quote : C.buy;
+
     return Scaffold(
-      appBar: AppBar(backgroundColor: C.buy, title: Text(t('Payment'))),
+      appBar: AppBar(backgroundColor: color, title: Text(t('Payment'))),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Text(widget.customer.name,
             textAlign: TextAlign.center,
@@ -430,7 +499,24 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   fontWeight: FontWeight.w700,
                   color: balanceLabel(owed).color)),
         ),
-        const SizedBox(height: 22),
+        const SizedBox(height: 18),
+        SegmentedButton<bool>(
+          style: SegmentedButton.styleFrom(
+              textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              selectedBackgroundColor: color,
+              selectedForegroundColor: Colors.white),
+          segments: [
+            ButtonSegment(
+                value: false, label: Fit(t('Cash')), icon: const Icon(Icons.payments)),
+            ButtonSegment(
+                value: true,
+                label: Fit(t('Cheque')),
+                icon: const Icon(Icons.account_balance)),
+          ],
+          selected: {_byCheque},
+          onSelectionChanged: (v) => setState(() => _byCheque = v.first),
+        ),
+        const SizedBox(height: 18),
         NumField(_amount, '${t('Amount')} (Rs.)', Icons.payments,
             autofocus: true, onChanged: (_) => setState(() {})),
         if (owed > 0 && amount != owed) ...[
@@ -440,6 +526,38 @@ class _PaymentScreenState extends State<PaymentScreen> {
             child: TextButton(
               onPressed: () => setState(() => _amount.text = (owed / 100).toString()),
               child: Text('${t('Pay full')} ${money(owed)}'),
+            ),
+          ),
+        ],
+        if (_byCheque) ...[
+          const SizedBox(height: 10),
+          TextField(
+            controller: _chequeNo,
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 20),
+            decoration: InputDecoration(
+                labelText: t('Cheque number'),
+                prefixIcon: const Icon(Icons.tag)),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _bank,
+            textCapitalization: TextCapitalization.words,
+            decoration: InputDecoration(
+                labelText: t('Bank (optional)'),
+                prefixIcon: const Icon(Icons.account_balance)),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.event, color: C.quote),
+              title: Text(t('Date on the cheque'),
+                  style: const TextStyle(fontSize: 14, color: Colors.black54)),
+              subtitle: Text(onDay(_due),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black87)),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _pickDue,
             ),
           ),
         ],
@@ -453,32 +571,39 @@ class _PaymentScreenState extends State<PaymentScreen> {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-                color: balanceLabel(after).color.withValues(alpha: 0.12),
+                color: (_byCheque ? C.quote : balanceLabel(after).color)
+                    .withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(16)),
-            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text(t('After payment'), style: const TextStyle(fontSize: 16)),
-              Text(balanceLabel(after).text,
-                  style: TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: balanceLabel(after).color)),
-            ]),
+            child: _byCheque
+                // A waiting cheque changes nothing yet, and saying so here is
+                // the whole point of keeping it out of the ledger.
+                ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(t('Balance stays at'), style: const TextStyle(fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text(balanceLabel(owed).text,
+                        style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: balanceLabel(owed).color)),
+                    const SizedBox(height: 4),
+                    Text(t('It goes down when you mark the cheque banked.'),
+                        style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                  ])
+                : Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text(t('After payment'), style: const TextStyle(fontSize: 16)),
+                    Text(balanceLabel(after).text,
+                        style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: balanceLabel(after).color)),
+                  ]),
           ),
         const SizedBox(height: 20),
         FilledButton.icon(
-          style: FilledButton.styleFrom(backgroundColor: C.buy),
+          style: FilledButton.styleFrom(backgroundColor: color),
           icon: const Icon(Icons.check),
           label: Text(t('Save')),
-          onPressed: () async {
-            final id = await guard(
-                context,
-                () => s.recordPayment(widget.customer.id, parseMoney(_amount.text) ?? 0,
-                    note: _note.text.trim()));
-            if (id == null || !context.mounted) return;
-            final nav = Navigator.of(context);
-            await showPaymentReceipt(context, widget.customer, id);
-            nav.pop(true);
-          },
+          onPressed: _save,
         ),
       ]),
     );

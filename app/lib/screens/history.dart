@@ -5,6 +5,7 @@ import '../files.dart';
 import '../models.dart';
 import '../store.dart' as s;
 import 'buy.dart' show NumField, PurchasesList;
+import 'cheques.dart';
 import 'customers.dart';
 
 /// Search text plus a date window, shared by all three tabs.
@@ -102,7 +103,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-        length: 3,
+        length: 4,
         child: Scaffold(
           appBar: AppBar(
             backgroundColor: C.history,
@@ -159,6 +160,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                   tabs: [
                     Tab(child: Fit(t('Sales'))),
+                    Tab(child: Fit(t('Cheques'))),
                     Tab(child: Fit(t('Returns'))),
                     Tab(child: Fit(t('Purchases'))),
                   ],
@@ -168,6 +170,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           ),
           body: TabBarView(children: [
             DocList(_f),
+            ChequesList(_f),
             ReturnsList(_f),
             PurchasesList(_f),
           ]),
@@ -341,25 +344,38 @@ class _DocScreenState extends State<DocScreen> {
     });
   }
 
-  Receipt _receipt(Doc d, List<DocItem> items) => Receipt(
-        kind: d.isQuote ? 'Quotation' : 'Sale',
-        no: d.no,
-        date: d.createdAt,
-        customer: d.customerName,
-        customerPhone: d.customerPhone,
-        reference: d.fromQuote == null ? null : 'Converted from a quotation',
-        lines: [for (final i in items) (i.name, i.qty, i.price)],
-        totals: [
-          ('Total', d.total),
-          if (!d.isQuote) ('Paid', d.settled),
-          if (!d.isQuote) (d.due > 0 ? 'Balance due' : 'Settled', d.due),
-        ],
-        footnote: d.isCancelled
-            ? 'This sale was cancelled.'
-            : d.isQuote
-                ? 'Prices held while stock lasts. This is not a bill.'
-                : null,
-      );
+  /// Receipts print in English, so this text is deliberately not translated.
+  static String _line(DocItem i) => i.discount == 0
+      ? i.name
+      : '${i.name}\nWas ${money(i.listPrice)} each  -  saved ${money(i.discount)}';
+
+  Receipt _receipt(Doc d, List<DocItem> items) {
+    final saved = items.fold(0, (a, i) => a + i.discount);
+    return Receipt(
+      kind: d.isQuote ? 'Quotation' : 'Sale',
+      no: d.no,
+      date: d.createdAt,
+      customer: d.customerName,
+      customerPhone: d.customerPhone,
+      reference: d.fromQuote == null ? null : 'Converted from a quotation',
+      lines: [for (final i in items) (_line(i), i.qty, i.price)],
+      totals: [
+        ('Total', d.total),
+        if (saved > 0) ('You saved', saved),
+        if (!d.isQuote) ('Paid', d.settled),
+        if (!d.isQuote) (d.due > 0 ? 'Balance due' : 'Settled', d.due),
+      ],
+      footnote: switch (d) {
+        _ when d.isCancelled => 'This sale was cancelled.',
+        _ when d.isQuote => 'Prices held while stock lasts. This is not a bill.',
+        // A due date beats "within a week": it is the thing to point at later.
+        _ when d.due > 0 =>
+          'Please settle ${money(d.due)} by ${onDay(payBy(d.createdAt))} '
+              '(within $creditDays days).',
+        _ => null,
+      },
+    );
+  }
 
   Future<void> _convert(Doc d) async {
     final paid = await showDialog<int>(
@@ -392,6 +408,7 @@ class _DocScreenState extends State<DocScreen> {
                   : C.sell;
           final canReturn =
               !d.isQuote && !d.isCancelled && items.any((i) => i.returnable > 0);
+          final saved = items.fold(0, (a, i) => a + i.discount);
 
           return Scaffold(
             appBar: AppBar(
@@ -435,6 +452,8 @@ class _DocScreenState extends State<DocScreen> {
                             const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
                     subtitle: Text([
                       '${i.qty} × ${money(i.price)}',
+                      if (i.discount > 0)
+                        '${t('Was')} ${money(i.listPrice)}',
                       if (i.returned > 0) '${t('Returned')}: ${i.returned}',
                     ].join('   •   ')),
                     trailing: Money(i.total),
@@ -442,6 +461,7 @@ class _DocScreenState extends State<DocScreen> {
                 ),
               const SizedBox(height: 10),
               _TotalRow(t('Total'), d.total, big: true, color: color),
+              if (saved > 0) _TotalRow(t('You saved'), saved, color: C.quote),
               if (!d.isQuote) ...[
                 _TotalRow(t('Paid'), d.settled, color: C.advance),
                 if (d.settledLater)

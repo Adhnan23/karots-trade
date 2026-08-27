@@ -20,6 +20,18 @@ int? parseMoney(String s) {
 final dateFmt = DateFormat('d MMM yyyy, h:mm a');
 String when(int ms) => dateFmt.format(DateTime.fromMillisecondsSinceEpoch(ms));
 
+final dayFmt = DateFormat('d MMM yyyy');
+String onDay(DateTime d) => dayFmt.format(d);
+String onDayMs(int ms) => onDay(DateTime.fromMillisecondsSinceEpoch(ms));
+
+/// How long a customer has to settle a bill taken on credit. Printed on the
+/// receipt as a real date, because "within a week" starts an argument and
+/// "by 3 Sep 2026" does not.
+const creditDays = 7;
+
+DateTime payBy(int soldAt) =>
+    DateTime.fromMillisecondsSinceEpoch(soldAt).add(const Duration(days: creditDays));
+
 // ---------------------------------------------------------------- identity
 
 const appName = 'Karots Trade';
@@ -172,6 +184,48 @@ const _ta = <String, String>{
   'Includes': 'இதில்',
   'paid after the sale': 'விற்பனைக்குப் பின் செலுத்தியது',
 
+  // Discounts
+  'Discount': 'தள்ளுபடி',
+  'Price each': 'ஒன்றின் விலை',
+  'Normal': 'வழக்கமான',
+  'Was': 'இருந்தது',
+  'You saved': 'மிச்சம்',
+  'Price cannot be less than the cost': 'விலை கொள்விலையை விடக் குறையக்கூடாது',
+  'Price is below cost': 'விலை கொள்விலைக்கும் குறைவு',
+
+  // Cheques
+  'Cash': 'ரொக்கம்',
+  'Cheque': 'காசோலை',
+  'Cheques': 'காசோலைகள்',
+  'Cheque number': 'காசோலை எண்',
+  'Bank (optional)': 'வங்கி (விருப்பம்)',
+  'Date on the cheque': 'காசோலைத் தேதி',
+  'Due': 'தேதி',
+  'Banked': 'வங்கியில் வந்தது',
+  'Returned unpaid': 'திரும்பியது',
+  'Ready to bank': 'வங்கிக்குத் தயார்',
+  'Cheques waiting': 'காத்திருக்கும் காசோலை',
+  'Waiting on the bank': 'வங்கியில் காத்திருப்பு',
+  'waiting on cheques': 'காசோலைகளில் காத்திருப்பு',
+  'Mark banked': 'வந்தது எனக் குறி',
+  'Mark returned': 'திரும்பியது எனக் குறி',
+  'Mark as banked?': 'வங்கியில் வந்ததா?',
+  'The balance goes down now.': 'இப்போது நிலுவை குறையும்.',
+  'Mark this cheque as returned unpaid?': 'இந்தக் காசோலை திரும்பியதா?',
+  'Cheque banked': 'காசோலை வங்கியில் வந்தது',
+  'Cheque marked returned': 'காசோலை திரும்பியது எனக் குறிக்கப்பட்டது',
+  'Balance stays at': 'நிலுவை இதுவே',
+  'It goes down when you mark the cheque banked.':
+      'காசோலை வந்ததும் நிலுவை குறையும்.',
+  'Not counted in the balance until the bank pays.':
+      'வங்கி பணம் தரும் வரை நிலுவையில் சேராது.',
+  'Cheques show up here.': 'காசோலைகள் இங்கே தெரியும்.',
+  'Cheque number is required': 'காசோலை எண் தேவை',
+  'Cheque not found': 'காசோலை கிடைக்கவில்லை',
+  'This cheque is already banked': 'இந்தக் காசோலை ஏற்கனவே வங்கியில் வந்தது',
+  'Only a waiting cheque can be marked returned':
+      'காத்திருக்கும் காசோலையை மட்டுமே திரும்பியது எனக் குறிக்கலாம்',
+
   // Money in
   'Payment': 'பணம்',
   'Pay full': 'முழுவதும் செலுத்து',
@@ -260,8 +314,8 @@ const _ta = <String, String>{
   'This file is not a valid backup': 'இது சரியான காப்புப்பிரதி கோப்பு அல்ல',
   'Can be returned at most': 'அதிகபட்சம் திரும்பப் பெறலாம்',
   'Return quantity is too high': 'திரும்பப் பெறும் அளவு அதிகம்',
-  'This product is used in sales or quotes and cannot be deleted':
-      'இந்தப் பொருள் விற்பனையில் உள்ளது, நீக்க முடியாது',
+  'This product has been bought or sold and cannot be deleted':
+      'இந்தப் பொருள் வாங்கப்பட்டது அல்லது விற்கப்பட்டது, நீக்க முடியாது',
   'This customer has transactions and cannot be deleted':
       'இந்த வாடிக்கையாளருக்கு பரிவர்த்தனைகள் உள்ளன, நீக்க முடியாது',
 };

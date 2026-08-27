@@ -72,7 +72,7 @@ class _BootState extends State<Boot> {
       );
 }
 
-typedef Stats = ({int products, int stock, int customers, int owed});
+typedef Stats = ({int products, int stock, int customers, int owed, int cheques});
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -150,7 +150,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   _OwedCard(
                     owed: stats?.owed,
                     people: debtors.length,
+                    cheques: stats?.cheques ?? 0,
                     onTap: () => _go(const CustomersScreen()),
+                    onCheques: () => _go(const HistoryScreen()),
                   ),
                   const SizedBox(height: 12),
 
@@ -220,51 +222,88 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 /// way they would in a bill book.
 class _OwedCard extends StatelessWidget {
   final int? owed;
-  final int people;
-  final VoidCallback onTap;
-  const _OwedCard({required this.owed, required this.people, required this.onTap});
+  final int people, cheques;
+  final VoidCallback onTap, onCheques;
+  const _OwedCard(
+      {required this.owed,
+      required this.people,
+      required this.cheques,
+      required this.onTap,
+      required this.onCheques});
 
   @override
   Widget build(BuildContext context) => Material(
         color: const Color(0xFF181C2E),
         borderRadius: BorderRadius.circular(22),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(t('OUT ON CREDIT'),
-                  style: const TextStyle(
-                      fontSize: 11,
-                      letterSpacing: 1.8,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF8B93B5))),
-              const SizedBox(height: 6),
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(owed == null ? '—' : money(owed!),
+        child: Column(children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(22),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(t('OUT ON CREDIT'),
                     style: const TextStyle(
-                      fontSize: 40,
-                      height: 1.0,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      letterSpacing: -1,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    )),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                  owed == null
-                      ? ''
-                      : owed == 0
-                          ? t('Everyone is settled up.')
-                          : '$people ${t(people == 1 ? 'customer owes you' : 'customers owe you')}',
-                  style: const TextStyle(fontSize: 14, color: Color(0xFFB6BCD4))),
-            ]),
+                        fontSize: 11,
+                        letterSpacing: 1.8,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF8B93B5))),
+                const SizedBox(height: 6),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(owed == null ? '—' : money(owed!),
+                      style: const TextStyle(
+                        fontSize: 40,
+                        height: 1.0,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        letterSpacing: -1,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      )),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                    owed == null
+                        ? ''
+                        : owed == 0
+                            ? t('Everyone is settled up.')
+                            : '$people ${t(people == 1 ? 'customer owes you' : 'customers owe you')}',
+                    style: const TextStyle(fontSize: 14, color: Color(0xFFB6BCD4))),
+              ]),
+            ),
           ),
-        ),
+          // Cheques sit under the credit figure rather than in it: the money is
+          // promised, not received, and the card must not blur the two.
+          if (cheques > 0)
+            InkWell(
+              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(22)),
+              onTap: onCheques,
+              child: Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  border: Border(top: BorderSide(color: Color(0xFF2C3149))),
+                ),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
+                child: Row(children: [
+                  const Icon(Icons.account_balance, size: 18, color: Color(0xFF8B93B5)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(t('waiting on cheques'),
+                        style:
+                            const TextStyle(fontSize: 13, color: Color(0xFFB6BCD4))),
+                  ),
+                  Text(money(cheques),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      )),
+                ]),
+              ),
+            ),
+        ]),
       );
 }
 

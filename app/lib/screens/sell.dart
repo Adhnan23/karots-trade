@@ -51,8 +51,10 @@ class _SellScreenState extends State<SellScreen> {
       toast(context, '${p.name}: ${t('no stock available')}', bad: true);
       return;
     }
-    final line = await Navigator.push<SellLine>(context,
-        MaterialPageRoute(builder: (_) => SellLineForm(product: p, batches: all)));
+    final line = await Navigator.push<SellLine>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => SellLineForm(product: p, batches: all, quote: _quote)));
     if (line != null) setState(() => _lines.add(line));
   }
 
@@ -138,7 +140,12 @@ class _SellScreenState extends State<SellScreen> {
                         title: Text(l.name,
                             style: const TextStyle(
                                 fontSize: 17, fontWeight: FontWeight.w600)),
-                        subtitle: Text('${l.qty} × ${money(l.price)}',
+                        subtitle: Text(
+                            [
+                              '${l.qty} × ${money(l.price)}',
+                              if (l.listPrice > l.price)
+                                '${t('Was')} ${money(l.listPrice)}',
+                            ].join('   •   '),
                             style: const TextStyle(fontSize: 15)),
                         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                           Money(l.total),
@@ -210,7 +217,16 @@ class _SellScreenState extends State<SellScreen> {
 class SellLineForm extends StatefulWidget {
   final Product product;
   final List<Batch> batches;
-  const SellLineForm({required this.product, required this.batches, super.key});
+
+  /// A quotation may be written for stock not on the shelf yet, so it is not
+  /// held to what is currently available.
+  final bool quote;
+
+  const SellLineForm(
+      {required this.product,
+      required this.batches,
+      this.quote = false,
+      super.key});
   @override
   State<SellLineForm> createState() => _SellLineFormState();
 }
@@ -218,19 +234,42 @@ class SellLineForm extends StatefulWidget {
 class _SellLineFormState extends State<SellLineForm> {
   late Batch _batch = widget.batches.first;
   final _qty = TextEditingController(text: '1');
+  late final _price = TextEditingController(text: _asText(_batch.price));
+
+  static String _asText(int cents) =>
+      cents % 100 == 0 ? '${cents ~/ 100}' : (cents / 100).toStringAsFixed(2);
 
   @override
   void dispose() {
     _qty.dispose();
+    _price.dispose();
     super.dispose();
   }
 
   int get _q => int.tryParse(_qty.text.trim()) ?? 0;
+  int get _p => parseMoney(_price.text) ?? -1;
+
+  /// Money knocked off the whole line, only when there really is a discount.
+  int get _off =>
+      _p >= 0 && _p < _batch.price && _q > 0 ? (_batch.price - _p) * _q : 0;
+
+  void _pickBatch(Batch b) {
+    setState(() {
+      _batch = b;
+      // The price field follows the batch, otherwise it silently keeps the
+      // price of a batch the customer is no longer buying from.
+      _price.text = _asText(b.price);
+    });
+  }
 
   void _submit() {
     if (_q <= 0) return toast(context, t('Quantity must be more than zero'), bad: true);
-    if (_q > _batch.qtyLeft) {
+    if (!widget.quote && _q > _batch.qtyLeft) {
       return toast(context, '${t('Only')} ${_batch.qtyLeft} ${t('available')}', bad: true);
+    }
+    if (_p < 0) return toast(context, t('Enter a valid selling price'), bad: true);
+    if (_p < _batch.cost) {
+      return toast(context, t('Price cannot be less than the cost'), bad: true);
     }
     Navigator.pop(
         context,
@@ -238,47 +277,72 @@ class _SellLineFormState extends State<SellLineForm> {
           productId: widget.product.id,
           batchId: _batch.id,
           name: widget.product.name,
-          price: _batch.price,
+          price: _p,
+          listPrice: _batch.price,
           qty: _q,
         ));
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(backgroundColor: C.sell, title: Text(widget.product.name)),
-        body: ListView(padding: const EdgeInsets.all(16), children: [
-          Center(child: Photo(widget.product.image, size: 110)),
-          const SizedBox(height: 18),
-          if (widget.batches.length > 1) ...[
-            Text(t('Choose batch'),
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-          ],
-          for (var i = 0; i < widget.batches.length; i++)
-            _BatchOption(
-              batch: widget.batches[i],
-              index: i + 1,
-              selected: _batch.id == widget.batches[i].id,
-              onTap: () => setState(() => _batch = widget.batches[i]),
-            ),
-          const SizedBox(height: 18),
-          NumField(_qty, t('Quantity'), Icons.numbers,
-              decimal: false, autofocus: true, onChanged: (_) => setState(() {})),
-          const SizedBox(height: 16),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(t('Total'),
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-            Money(_batch.price * (_q < 0 ? 0 : _q), size: 24, color: C.sell),
-          ]),
-          const SizedBox(height: 20),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(backgroundColor: C.sell),
-            icon: const Icon(Icons.add),
-            label: Text(t('Add')),
-            onPressed: _submit,
+  Widget build(BuildContext context) {
+    final color = widget.quote ? C.quote : C.sell;
+    return Scaffold(
+      appBar: AppBar(backgroundColor: color, title: Text(widget.product.name)),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Center(child: Photo(widget.product.image, size: 110)),
+        const SizedBox(height: 18),
+        if (widget.batches.length > 1) ...[
+          Text(t('Choose batch'),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+        ],
+        for (var i = 0; i < widget.batches.length; i++)
+          _BatchOption(
+            batch: widget.batches[i],
+            index: i + 1,
+            selected: _batch.id == widget.batches[i].id,
+            onTap: () => _pickBatch(widget.batches[i]),
           ),
+        const SizedBox(height: 18),
+        NumField(_qty, t('Quantity'), Icons.numbers,
+            decimal: false, autofocus: true, onChanged: (_) => setState(() {})),
+        const SizedBox(height: 14),
+        NumField(_price, '${t('Price each')} (Rs.)', Icons.local_offer,
+            onChanged: (_) => setState(() {})),
+        const SizedBox(height: 6),
+        Text(
+            '${t('Normal')} ${money(_batch.price)}   •   ${t('Cost')} ${money(_batch.cost)}',
+            style: const TextStyle(fontSize: 14, color: Colors.black54)),
+        if (_p >= 0 && _p < _batch.cost)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(t('Price cannot be less than the cost'),
+                style: const TextStyle(
+                    fontSize: 14, color: C.owe, fontWeight: FontWeight.w600)),
+          )
+        else if (_off > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('${t('Discount')} ${money(_off)}',
+                style: const TextStyle(
+                    fontSize: 15, color: C.quote, fontWeight: FontWeight.w700)),
+          ),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(t('Total'),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          Money((_p < 0 ? 0 : _p) * (_q < 0 ? 0 : _q), size: 24, color: color),
         ]),
-      );
+        const SizedBox(height: 20),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(backgroundColor: color),
+          icon: const Icon(Icons.add),
+          label: Text(t('Add')),
+          onPressed: _submit,
+        ),
+      ]),
+    );
+  }
 }
 
 class _BatchOption extends StatelessWidget {

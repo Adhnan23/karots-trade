@@ -90,8 +90,15 @@ class DocItem {
   final String id, productId, batchId, name;
   final int qty, price, returned;
 
+  /// The normal price before the seller knocked anything off. 0 on lines
+  /// written before discounts existed, which simply reads as "no discount".
+  final int listPrice;
+
   int get total => qty * price;
   int get returnable => qty - returned;
+
+  /// What the customer was let off on this line, in total.
+  int get discount => listPrice > price ? (listPrice - price) * qty : 0;
 
   DocItem.fromRow(SqlRow r)
       : id = _s(r['id']),
@@ -100,7 +107,41 @@ class DocItem {
         name = _s(r['name']),
         qty = _i(r['qty']),
         price = _i(r['price']),
+        listPrice = _i(r['list_price']),
         returned = _i(r['returned']);
+}
+
+/// A cheque handed over as payment. It is not money until the bank says so,
+/// which is why it is kept apart from the ledger until it clears.
+class Cheque {
+  final String id, customerId, customerName, customerPhone;
+  final String chequeNo, bank, status, note;
+  final String? ledgerId;
+  final int no, amount, dueAt, createdAt;
+  final int? settledAt;
+
+  bool get isPending => status == 'pending';
+  bool get isCleared => status == 'cleared';
+  bool get isBounced => status == 'bounced';
+
+  /// The date on the cheque has arrived, so it can be taken to the bank.
+  bool get isDue => isPending && dueAt <= DateTime.now().millisecondsSinceEpoch;
+
+  Cheque.fromRow(SqlRow r)
+      : id = _s(r['id']),
+        customerId = _s(r['customer_id']),
+        customerName = _s(r['customer_name']),
+        customerPhone = _s(r['customer_phone']),
+        chequeNo = _s(r['cheque_no']),
+        bank = _s(r['bank']),
+        status = _s(r['status']),
+        note = _s(r['note']),
+        ledgerId = r['ledger_id'] as String?,
+        no = _i(r['no']),
+        amount = _i(r['amount']),
+        dueAt = _i(r['due_at']),
+        createdAt = _i(r['created_at']),
+        settledAt = (r['settled_at'] as num?)?.toInt();
 }
 
 class LedgerEntry {
@@ -137,13 +178,22 @@ class BuyLine {
 /// One line being entered on the Sell / Quote screen.
 class SellLine {
   final String productId, batchId, name;
+
+  /// What this customer is being charged, which may be less than the batch's
+  /// usual price.
   final int price;
+
+  /// The usual price, kept so the receipt can show the discount. 0 means take
+  /// whatever the batch says.
+  final int listPrice;
+
   int qty;
   SellLine({
     required this.productId,
     required this.batchId,
     required this.name,
     required this.price,
+    this.listPrice = 0,
     this.qty = 1,
   });
   int get total => price * qty;
