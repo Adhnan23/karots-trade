@@ -25,7 +25,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _checkUndoPoint() async {
-    final at = await lastImportUndoPoint();
+    // Only an offer to undo. If storage will not answer, the screen still has
+    // to open — it is the one holding the backup buttons.
+    DateTime? at;
+    try {
+      at = await lastImportUndoPoint();
+    } catch (_) {
+      at = null;
+    }
     if (mounted) {
       setState(() {
         _undoPoint = at;
@@ -65,7 +72,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         appBar: AppBar(backgroundColor: C.settings, title: Text(t('Settings'))),
         body: AbsorbPointer(
           absorbing: _busy,
-          child: ListView(padding: const EdgeInsets.all(16), children: [
+          // The list runs to the bottom of the screen, so the last control
+          // would otherwise sit under the system navigation bar.
+          child: SafeArea(
+              child: ListView(padding: const EdgeInsets.all(16), children: [
             Text(t('These appear on your receipts'),
                 style: const TextStyle(fontSize: 15, color: Colors.black54)),
             const SizedBox(height: 12),
@@ -234,7 +244,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 24),
-          ]),
+          ])),
         ),
       );
 }

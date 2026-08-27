@@ -86,7 +86,11 @@ class _SellScreenState extends State<SellScreen> {
       appBar: AppBar(
           backgroundColor: _quote ? C.quote : C.sell,
           title: Text(t(_quote ? 'Quote' : 'Sell'))),
-      body: Column(children: [
+      // Three-button navigation keeps a bar across the bottom of the screen.
+      // Without this, Add item sits half under it and reaching for it presses
+      // Home instead.
+      body: SafeArea(
+          child: Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
           child: SegmentedButton<bool>(
@@ -170,7 +174,7 @@ class _SellScreenState extends State<SellScreen> {
             onPressed: _addItem,
           ),
         ),
-      ]),
+      ])),
       bottomNavigationBar: _lines.isEmpty
           ? null
           : SafeArea(

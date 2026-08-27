@@ -54,7 +54,10 @@ class _BuyScreenState extends State<BuyScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(backgroundColor: C.buy, title: Text(t('Buy'))),
-        body: Column(children: [
+        // Keeps Add item clear of the system navigation bar on a phone using
+        // three buttons rather than gestures.
+        body: SafeArea(
+            child: Column(children: [
           Expanded(
             child: _lines.isEmpty
                 ? EmptyState(Icons.add_shopping_cart, 'Nothing here yet',
@@ -97,7 +100,7 @@ class _BuyScreenState extends State<BuyScreen> {
               onPressed: _addItem,
             ),
           ),
-        ]),
+        ])),
         bottomNavigationBar: _lines.isEmpty
             ? null
             : SafeArea(
