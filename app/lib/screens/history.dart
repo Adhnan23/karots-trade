@@ -214,7 +214,11 @@ class _DocListState extends State<DocList> {
   Widget build(BuildContext context) => Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-          child: Row(children: [
+          // Scrolls sideways: three chips fit in English but not always in
+          // Tamil, and never at a large system font size.
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
             for (final (label, value) in [
               ('Everything', null),
               ('Sales', 'sale'),
@@ -232,7 +236,8 @@ class _DocListState extends State<DocList> {
                   },
                 ),
               ),
-          ]),
+            ]),
+          ),
         ),
         Expanded(
           child: FutureBuilder(

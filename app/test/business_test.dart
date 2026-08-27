@@ -527,6 +527,116 @@ void main() {
     expect((await ledger(cid)).length, 4, reason: 'sale, payment, payment, return');
   });
 
+  group('undoing a payment', () {
+    late String cid, pid, bid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 20);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    Future<String> sell({int qty = 10, int paid = 0}) => saveDoc(
+        customerId: cid,
+        quote: false,
+        paid: paid,
+        lines: [
+          SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty)
+        ]);
+
+    test('a wrong amount goes back, and the bill it cleared re-opens', () async {
+      final sale = await sell(); // Rs. 700 owing
+      final fat = await recordPayment(cid, rs(700));
+
+      expect(await balance(cid), 0);
+      expect((await doc(sale))!.due, 0, reason: 'the bill reads as paid');
+
+      await undoPayment(fat);
+
+      expect(await balance(cid), rs(700), reason: 'they owe it again');
+      expect((await doc(sale))!.due, rs(700),
+          reason: 'settlement is derived, so the bill re-opens by itself');
+      expect((await doc(sale))!.settled, 0);
+    });
+
+    test('nothing is deleted — both the mistake and the fix stay visible',
+        () async {
+      await sell();
+      final wrong = await recordPayment(cid, rs(5000));
+      await undoPayment(wrong);
+
+      final rows = await ledger(cid);
+      expect(rows, hasLength(3), reason: 'sale, payment, reversal');
+      expect(rows.map((e) => e.type),
+          containsAll(['sale', 'payment', 'payment_cancelled']));
+
+      final original = rows.firstWhere((e) => e.id == wrong);
+      expect(original.amount, -rs(5000), reason: 'the original row is untouched');
+
+      final fix = rows.firstWhere((e) => e.type == 'payment_cancelled');
+      expect(fix.refId, wrong, reason: 'points at what it undid');
+      expect(fix.amount, rs(5000));
+    });
+
+    test('the same payment cannot be undone twice', () async {
+      await sell();
+      final p = await recordPayment(cid, rs(300));
+      await undoPayment(p);
+      final after = await balance(cid);
+
+      expect(() => undoPayment(p), throwsA(isA<Exception>()));
+      expect(await balance(cid), after, reason: 'no double reversal');
+    });
+
+    test('cash taken with the sale is refused, and says what to do instead',
+        () async {
+      await sell(paid: rs(200));
+      final atCounter =
+          (await ledger(cid)).firstWhere((e) => e.type == 'payment');
+
+      expect(() => undoPayment(atCounter.id),
+          throwsA(predicate((e) => '$e'.contains('cancel the sale'))));
+      expect(await balance(cid), rs(500), reason: 'untouched');
+    });
+
+    test('a reversal is not itself a payment that can be undone', () async {
+      await sell();
+      final p = await recordPayment(cid, rs(300));
+      final fix = await undoPayment(p);
+      expect(() => undoPayment(fix), throwsA(isA<Exception>()));
+    });
+
+    test('a cheque ticked off by mistake goes back to waiting', () async {
+      await sell();
+      final ch = await saveCheque(
+          customerId: cid, chequeNo: '400123', amount: rs(400), dueAt: 0);
+      final paymentId = await clearCheque(ch);
+
+      expect(await balance(cid), rs(300));
+
+      await undoPayment(paymentId);
+
+      final back = (await oneCheque(ch))!;
+      expect(back.isPending, isTrue, reason: 'it can be banked or returned properly');
+      expect(back.ledgerId, isNull);
+      expect(await balance(cid), rs(700), reason: 'the money was never really in');
+      expect((await stats()).cheques, rs(400), reason: 'waiting again');
+    });
+
+    test('undoing one payment leaves the others settling as before', () async {
+      final sale = await sell(); // Rs. 700
+      await recordPayment(cid, rs(300));
+      final wrong = await recordPayment(cid, rs(400));
+
+      expect((await doc(sale))!.due, 0);
+
+      await undoPayment(wrong);
+
+      expect((await doc(sale))!.settled, rs(300), reason: 'the good payment stands');
+      expect((await doc(sale))!.due, rs(400));
+    });
+  });
+
   group('deleting cannot destroy money or stock', () {
     test('a customer holding an advance is not deletable', () async {
       final c = await saveCustomer(name: 'Paid ahead');

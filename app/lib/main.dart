@@ -72,7 +72,14 @@ class _BootState extends State<Boot> {
       );
 }
 
-typedef Stats = ({int products, int stock, int customers, int owed, int cheques});
+typedef Stats = ({
+  int products,
+  int stock,
+  int customers,
+  int owed,
+  int cheques,
+  int sales
+});
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -169,17 +176,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ]),
                   const SizedBox(height: 12),
 
+                  // Two across rather than four: a shopkeeper reads these at
+                  // arm's length, and four in a row leaves nothing legible.
                   Row(children: [
                     _Tile(t('Products'), '${stats?.products ?? '–'}', Icons.inventory_2,
                         C.products, () => _go(const ProductsScreen())),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 12),
                     _Tile(t('Stock'), '${stats?.stock ?? '–'}', Icons.layers, C.buy,
                         () => _go(const ProductsScreen())),
-                    const SizedBox(width: 10),
+                  ]),
+                  const SizedBox(height: 12),
+                  Row(children: [
                     _Tile(t('Customers'), '${stats?.customers ?? '–'}', Icons.people,
                         C.customers, () => _go(const CustomersScreen())),
-                    const SizedBox(width: 10),
-                    _Tile(t('History'), '', Icons.receipt_long, C.history,
+                    const SizedBox(width: 12),
+                    _Tile(t('History'), '${stats?.sales ?? '–'}', Icons.receipt_long, C.history,
                         () => _go(const HistoryScreen())),
                   ]),
                   const SizedBox(height: 20),
@@ -352,32 +363,52 @@ class _Tile extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(16),
             onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-              child: Column(children: [
-                Icon(icon, size: 22, color: color),
-                const SizedBox(height: 6),
-                if (value.isNotEmpty)
-                  Text(value,
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                        color: color,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      )),
-                // Tamil labels run longer than English; two lines and a shrink
-                // to fit beats a word cut off mid-letter.
-                SizedBox(
-                  height: 30,
-                  child: Center(
-                    child: Text(label,
-                        maxLines: 2,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                            fontSize: 11, height: 1.25, color: Colors.black54)),
+            // A fixed height so a tile with a number and one without still sit
+            // level next to each other.
+            child: SizedBox(
+              height: 92,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+                child: Row(children: [
+                  Icon(icon, size: 34, color: color),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (value.isNotEmpty)
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(value,
+                                maxLines: 1,
+                                style: TextStyle(
+                                  fontSize: 28,
+                                  height: 1.1,
+                                  fontWeight: FontWeight.w800,
+                                  color: color,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                )),
+                          ),
+                        // Tamil labels run longer than English; shrinking to
+                        // fit beats a word cut off mid-letter.
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(label,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.black54)),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ]),
+                ]),
+              ),
             ),
           ),
         ),

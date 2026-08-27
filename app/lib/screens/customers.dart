@@ -166,6 +166,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
             }
             final (c, entries, docs, waiting) = snap.data!;
             if (c == null) return Center(child: Text(t('Not found')));
+            final reversed = {
+              for (final x in entries)
+                if (x.type == 'payment_cancelled') x.refId
+            };
             final b = balanceLabel(c.balance);
             return ListView(padding: const EdgeInsets.all(16), children: [
               Text(c.name,
@@ -215,10 +219,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
               if (waiting.isNotEmpty) ...[
                 const SizedBox(height: 22),
                 Row(children: [
-                  Text(t('Cheques waiting'),
-                      style:
-                          const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-                  const Spacer(),
+                  // The heading gives way to the amount, never the other way
+                  // round — Tamil runs long and a big font setting runs longer.
+                  Expanded(
+                    child: Text(t('Cheques waiting'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 8),
                   Money(waiting.fold(0, (a, h) => a + h.amount), color: C.quote),
                 ]),
                 Text(t('Not counted in the balance until the bank pays.'),
@@ -237,7 +247,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   child: Text(t('Nothing here yet'),
                       style: const TextStyle(color: Colors.black54, fontSize: 16)),
                 ),
-              for (final e in entries) _LedgerRow(e, c, docs),
+              for (final e in entries)
+                _LedgerRow(e, c, docs,
+                    undone: reversed.contains(e.id), onChanged: _reload),
               const SizedBox(height: 24),
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
@@ -305,14 +317,34 @@ class _LedgerRow extends StatelessWidget {
   final LedgerEntry e;
   final Customer customer;
   final List<Doc> docs;
-  const _LedgerRow(this.e, this.customer, this.docs);
+
+  /// True when a reversal for this payment is already on the account.
+  final bool undone;
+  final VoidCallback onChanged;
+  const _LedgerRow(this.e, this.customer, this.docs,
+      {required this.undone, required this.onChanged});
 
   static const _look = {
     'sale': (Icons.point_of_sale, C.sell, 'Sale'),
     'payment': (Icons.payments, C.advance, 'Payment'),
     'return': (Icons.assignment_return, C.ret, 'Return'),
     'sale_cancelled': (Icons.cancel, Colors.grey, 'Sale cancelled'),
+    'payment_cancelled': (Icons.undo, Colors.grey, 'Payment undone'),
   };
+
+  Future<void> _undo(BuildContext context) async {
+    if (!await ask(
+        context,
+        '${t('Undo this payment?')} ${t('The money goes back on their account.')}',
+        t('Undo'))) {
+      return;
+    }
+    if (!context.mounted) return;
+    final id = await guard(context, () => s.undoPayment(e.id));
+    if (id == null || !context.mounted) return;
+    toast(context, t('Payment undone'));
+    onChanged();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -322,6 +354,9 @@ class _LedgerRow extends StatelessWidget {
     for (final d in docs) {
       if (d.id == e.refId) doc = d;
     }
+    // Cash taken with a sale is part of that sale, so it is undone by
+    // cancelling the sale rather than on its own.
+    final canUndo = e.isPayment && doc == null && !undone;
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
       child: ListTile(
@@ -333,12 +368,25 @@ class _LedgerRow extends StatelessWidget {
             [when(e.createdAt), if (e.note.isNotEmpty) e.note].join('\n'),
             style: const TextStyle(fontSize: 13)),
         isThreeLine: e.note.isNotEmpty,
-        trailing: Text(
-            '${e.amount > 0 ? '+' : '-'}${money(e.amount.abs())}',
-            style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: e.amount > 0 ? C.owe : C.advance)),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${e.amount > 0 ? '+' : '-'}${money(e.amount.abs())}',
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: e.amount > 0 ? C.owe : C.advance)),
+          // Deliberately compact: a full-size IconButton is 48px wide and
+          // pushes the amount off the edge of a small phone.
+          if (canUndo)
+            IconButton(
+              icon: const Icon(Icons.undo, color: C.owe),
+              iconSize: 20,
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+              padding: EdgeInsets.zero,
+              tooltip: t('Undo this payment?'),
+              onPressed: () => _undo(context),
+            ),
+        ]),
         // A payment tied to a sale opens the sale; any other payment — taken at
         // the counter, or a cheque that finally cleared — opens its receipt.
         onTap: switch (e.type) {

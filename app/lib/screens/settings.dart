@@ -15,6 +15,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final _phone = TextEditingController(text: s.businessPhone);
   bool _busy = false;
 
+  /// When the app last replaced everything, if it ever has.
+  DateTime? _undoPoint;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkUndoPoint();
+  }
+
+  Future<void> _checkUndoPoint() async {
+    final at = await lastImportUndoPoint();
+    if (mounted) {
+      setState(() {
+        _undoPoint = at;
+      });
+    }
+  }
+
+  /// Everything an import or an undo has to refresh afterwards.
+  Future<void> _afterRestore(String message) async {
+    await s.loadSettings();
+    if (!mounted) return;
+    _name.text = s.businessName;
+    _phone.text = s.businessPhone;
+    locale.value = s.settings['language'] ?? 'en';
+    await _checkUndoPoint();
+    if (mounted) toast(context, message);
+  }
+
   @override
   void dispose() {
     _name.dispose();
@@ -134,16 +163,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 await _run(() async {
                   final bytes = await pickBackupFile();
                   if (bytes == null) return;
-                  await importBackup(bytes);
-                  await s.loadSettings();
-                  if (!context.mounted) return;
-                  _name.text = s.businessName;
-                  _phone.text = s.businessPhone;
-                  locale.value = s.settings['language'] ?? 'en';
-                  toast(context, t('Backup restored'));
+                  await importBackupSafely(bytes);
+                  await _afterRestore(t('Backup restored'));
                 });
               },
             ),
+            if (_undoPoint != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  contentPadding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+                  leading: const Icon(Icons.history_toggle_off, color: C.settings),
+                  title: Text(t('Undo the last import'),
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                      '${t('Puts back what was here on')} ${when(_undoPoint!.millisecondsSinceEpoch)}',
+                      style: const TextStyle(fontSize: 13)),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    if (!await ask(
+                        context,
+                        t('Put back the data from before the last import?'),
+                        t('Undo'))) {
+                      return;
+                    }
+                    if (!mounted) return;
+                    await _run(() async {
+                      await undoLastImport();
+                      await _afterRestore(t('Put back'));
+                    });
+                  },
+                ),
+              ),
+            ],
             const Divider(height: 40),
             Text(t('About'),
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),

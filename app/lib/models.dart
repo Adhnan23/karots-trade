@@ -145,7 +145,7 @@ class Cheque {
 }
 
 class LedgerEntry {
-  final String id, type, note;
+  final String id, customerId, type, note;
   final String? refId;
   final int no, amount, createdAt;
 
@@ -156,6 +156,7 @@ class LedgerEntry {
 
   LedgerEntry.fromRow(SqlRow r)
       : id = _s(r['id']),
+        customerId = _s(r['customer_id']),
         no = _i(r['no']),
         balanceAfter = _i(r['balance_after']),
         type = _s(r['type']),

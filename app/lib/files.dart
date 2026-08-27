@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -246,4 +249,33 @@ Future<void> importBackup(Uint8List bytes) async {
 Future<Uint8List?> pickBackupFile() async {
   final f = await FilePicker.pickFile();
   return f == null ? null : await f.readAsBytes();
+}
+
+// ---------------------------------------------------------------- undo import
+
+/// Importing replaces everything. One wrong file should not be the end of the
+/// books, so the app keeps its own copy of what was there just before — inside
+/// its own storage, where it can hand it straight back.
+Future<File> _rollbackFile() async =>
+    File(p.join((await getApplicationDocumentsDirectory()).path,
+        'karots-before-import.json'));
+
+/// Takes the safety copy first, then imports. If the import throws, the
+/// database is untouched and the copy is simply a spare.
+Future<void> importBackupSafely(Uint8List bytes) async {
+  await (await _rollbackFile()).writeAsBytes(await exportBackup(), flush: true);
+  await importBackup(bytes);
+}
+
+/// When the app last replaced everything, or null if it never has.
+Future<DateTime?> lastImportUndoPoint() async {
+  final f = await _rollbackFile();
+  return await f.exists() ? f.lastModified() : null;
+}
+
+/// Puts back whatever was there before the last import.
+Future<void> undoLastImport() async {
+  final f = await _rollbackFile();
+  if (!await f.exists()) throw Exception('There is nothing to undo');
+  await importBackup(await f.readAsBytes());
 }

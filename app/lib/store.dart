@@ -371,6 +371,55 @@ Future<String> recordPayment(String customerId, int amount, {String note = ''}) 
   return id;
 }
 
+/// Undoes a payment that was entered wrong — the wrong amount, or the wrong
+/// customer.
+///
+/// The original row is never deleted. The ledger only ever grows, so both the
+/// mistake and its correction stay on the account where anyone can see what
+/// happened. Putting the money back is enough on its own: settlement is
+/// derived, so any bill this payment had cleared re-opens by itself.
+Future<String> undoPayment(String ledgerId) async {
+  final id = uid();
+  await db.transaction((tx) async {
+    final rows = await tx.query('ledger', where: 'id = ?', whereArgs: [ledgerId]);
+    if (rows.isEmpty) throw Exception('Payment not found');
+    final e = LedgerEntry.fromRow(rows.first);
+    if (e.type != 'payment') throw Exception('Only a payment can be undone');
+
+    final already = await tx.query('ledger',
+        where: "type = 'payment_cancelled' AND ref_id = ?", whereArgs: [ledgerId]);
+    if (already.isNotEmpty) throw Exception('This payment was already undone');
+
+    // Cash handed over as part of a sale belongs to that sale. Pulling it out
+    // on its own would leave the bill claiming something that never happened,
+    // so that case has to go through cancelling the sale.
+    if (e.refId != null) {
+      final onSale = await tx.query('docs', where: 'id = ?', whereArgs: [e.refId]);
+      if (onSale.isNotEmpty) {
+        throw Exception('This was paid with the sale, so cancel the sale instead');
+      }
+    }
+
+    // A cheque ticked off as banked by mistake goes back to waiting, where it
+    // can be banked or marked returned properly.
+    await tx.rawUpdate(
+        "UPDATE cheques SET status = 'pending', ledger_id = NULL, settled_at = NULL "
+        'WHERE ledger_id = ?',
+        [ledgerId]);
+
+    await tx.insert('ledger', {
+      'id': id,
+      'customer_id': e.customerId,
+      'type': 'payment_cancelled',
+      'amount': -e.amount, // the payment was negative, so this puts it back
+      'ref_id': ledgerId,
+      'note': 'Payment #${e.no} undone',
+      'created_at': _now(),
+    });
+  });
+  return id;
+}
+
 // ============================================================ cheques
 
 /// Records a cheque handed over as payment.
@@ -512,12 +561,16 @@ Future<Cheque?> oneCheque(String id) async {
 /// Derived rather than stored, which is what makes a later payment finish off
 /// an earlier part-paid sale — and makes an advance paid before the sale was
 /// even written settle it too, with no special case for either.
+///
+/// Credits are payments and returns, netted against undone payments: a reversal
+/// is positive, so it cancels its payment inside the same sum and the bill it
+/// had cleared goes back to unpaid on its own.
 const _settled = '''
     CASE WHEN d.kind = 'sale' AND d.status <> 'cancelled' THEN
       MAX(0, MIN(d.total,
         IFNULL((SELECT -SUM(l.amount) FROM ledger l
                  WHERE l.customer_id = d.customer_id
-                   AND l.amount < 0 AND l.type <> 'sale_cancelled'), 0)
+                   AND l.type IN ('payment', 'return', 'payment_cancelled')), 0)
         - IFNULL((SELECT SUM(e.total) FROM docs e
                    WHERE e.customer_id = d.customer_id AND e.kind = 'sale'
                      AND e.status <> 'cancelled'
@@ -531,7 +584,9 @@ Future<List<Doc>> docs({
   String q = '',
   DateTime? from,
   DateTime? to,
-  int limit = 500,
+  // High enough that a shop writing 20 bills a day will not reach it for years.
+  // It is a guard against runaway memory, not a page size.
+  int limit = 20000,
 }) async {
   final w = <String>[], a = <Object?>[];
   if (customerId != null) {
@@ -903,11 +958,12 @@ Future<List<Customer>> debtors({int limit = 5}) async => (await db.rawQuery('''
     .map(Customer.fromRow)
     .toList();
 
-Future<({int products, int stock, int customers, int owed, int cheques})>
+Future<({int products, int stock, int customers, int owed, int cheques, int sales})>
     stats() async {
   final p = await db.rawQuery(
       'SELECT (SELECT COUNT(*) FROM products) p, (SELECT IFNULL(SUM(qty_left),0) FROM batches) s, (SELECT COUNT(*) FROM customers) c,'
-      " (SELECT IFNULL(SUM(amount),0) FROM cheques WHERE status = 'pending') h");
+      " (SELECT IFNULL(SUM(amount),0) FROM cheques WHERE status = 'pending') h,"
+      " (SELECT COUNT(*) FROM docs WHERE kind = 'sale' AND status <> 'cancelled') d");
   final owed = await db.rawQuery('''
       SELECT IFNULL(SUM(b),0) o FROM
         (SELECT SUM(amount) b FROM ledger GROUP BY customer_id) WHERE b > 0''');
@@ -918,5 +974,6 @@ Future<({int products, int stock, int customers, int owed, int cheques})>
     customers: (r['c'] as num).toInt(),
     owed: (owed.first['o'] as num).toInt(),
     cheques: (r['h'] as num).toInt(),
+    sales: (r['d'] as num).toInt(),
   );
 }

@@ -82,19 +82,24 @@ class ChequeCard extends StatelessWidget {
             Money(cheque.amount, color: look.color),
           ]),
           const SizedBox(height: 6),
-          Row(children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                  color: look.color.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(12)),
-              child: Text(t(look.label),
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: look.color)),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            // The status word gives way before the receipt button does; in
+            // Tamil 'returned unpaid' is a good deal longer than in English.
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                    color: look.color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12)),
+                child: Text(t(look.label),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: look.color)),
+              ),
             ),
-            const Spacer(),
             IconButton(
               icon: const Icon(Icons.receipt_long),
               tooltip: t('Receipt'),
@@ -199,25 +204,28 @@ class _ChequesListState extends State<ChequesList> {
   Widget build(BuildContext context) => Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-          child: Row(children: [
-            for (final (label, value) in [
-              ('Everything', null),
-              ('Waiting', 'pending'),
-              ('Banked', 'cleared'),
-            ])
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: Text(t(label)),
-                  selected: _status == value,
-                  selectedColor: C.history.withValues(alpha: 0.18),
-                  onSelected: (_) {
-                    _status = value;
-                    _reload();
-                  },
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              for (final (label, value) in [
+                ('Everything', null),
+                ('Waiting', 'pending'),
+                ('Banked', 'cleared'),
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(t(label)),
+                    selected: _status == value,
+                    selectedColor: C.history.withValues(alpha: 0.18),
+                    onSelected: (_) {
+                      _status = value;
+                      _reload();
+                    },
+                  ),
                 ),
-              ),
-          ]),
+            ]),
+          ),
         ),
         Expanded(
           child: FutureBuilder(

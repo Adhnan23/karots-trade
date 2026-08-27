@@ -226,6 +226,25 @@ const _ta = <String, String>{
   'Only a waiting cheque can be marked returned':
       'காத்திருக்கும் காசோலையை மட்டுமே திரும்பியது எனக் குறிக்கலாம்',
 
+  // Undoing a payment
+  'Undo': 'திரும்பப் பெறு',
+  'Undo this payment?': 'இந்தப் பணத்தை நீக்கவா?',
+  'The money goes back on their account.': 'தொகை மீண்டும் கணக்கில் சேரும்.',
+  'Payment undone': 'பணம் நீக்கப்பட்டது',
+  'Payment not found': 'பணம் கிடைக்கவில்லை',
+  'Only a payment can be undone': 'பணத்தை மட்டுமே நீக்க முடியும்',
+  'This payment was already undone': 'இந்தப் பணம் ஏற்கனவே நீக்கப்பட்டது',
+  'This was paid with the sale, so cancel the sale instead':
+      'இது விற்பனையுடன் செலுத்தியது, விற்பனையை ரத்து செய்யவும்',
+
+  // Undoing an import
+  'Undo the last import': 'கடைசி மீட்டெடுப்பை நீக்கு',
+  'Puts back what was here on': 'இந்த நேரத்தில் இருந்தது திரும்பும்',
+  'Put back the data from before the last import?':
+      'மீட்டெடுப்புக்கு முந்தைய தகவல்களைத் திரும்பப் பெறவா?',
+  'Put back': 'திரும்பப் பெறப்பட்டது',
+  'There is nothing to undo': 'நீக்க எதுவும் இல்லை',
+
   // Money in
   'Payment': 'பணம்',
   'Pay full': 'முழுவதும் செலுத்து',
