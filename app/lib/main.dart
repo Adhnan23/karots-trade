@@ -284,8 +284,8 @@ class _OwedCard extends StatelessWidget {
               ]),
             ),
           ),
-          // Cheques sit under the credit figure rather than in it: the money is
-          // promised, not received, and the card must not blur the two.
+          // Already inside the figure above — this line says how much of it is
+          // riding on cheques the bank has not confirmed yet.
           if (cheques > 0)
             InkWell(
               borderRadius: const BorderRadius.vertical(bottom: Radius.circular(22)),

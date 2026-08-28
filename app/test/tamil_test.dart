@@ -12,6 +12,11 @@ const indirect = [
   'All time', 'Today', 'Last 7 days', 'This month', 'Choose dates',
   'Quotation', 'Purchase', 'Receipt',
   'In stock', 'Out of stock',
+  // Reached through a menu loop, a ternary, or the ledger row's label table.
+  'Adjustment', 'Balance before this app', 'Adjust balance',
+  'Choose logo', 'Change logo', 'day left', 'days left',
+  'What this customer already owed you before you started using this app.',
+  'Use this only to correct the books. Every adjustment stays on the account.',
 ];
 
 void main() {

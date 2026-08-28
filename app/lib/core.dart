@@ -337,6 +337,44 @@ const _ta = <String, String>{
       'இந்தப் பொருள் வாங்கப்பட்டது அல்லது விற்கப்பட்டது, நீக்க முடியாது',
   'This customer has transactions and cannot be deleted':
       'இந்த வாடிக்கையாளருக்கு பரிவர்த்தனைகள் உள்ளன, நீக்க முடியாது',
+  // Statements, adjustments and the balance carried in from before
+  'Statement': 'கணக்கு அறிக்கை',
+  'Adjust balance': 'நிலுவை திருத்தம்',
+  'Adjustment': 'திருத்தம்',
+  'Balance before this app': 'முந்தைய நிலுவை',
+  'Owed before this app': 'செயலிக்கு முன் கடன்',
+  'What this customer already owed you before you started using this app.':
+      'இந்த செயலியைப் பயன்படுத்த முன் இவர் தர வேண்டிய தொகை.',
+  'Use this only to correct the books. Every adjustment stays on the account.':
+      'கணக்கைச் சரிசெய்ய மட்டும். ஒவ்வொரு திருத்தமும் கணக்கில் நிலைக்கும்.',
+  'Owes more': 'மேலும் கடன்',
+  'Owes less': 'கடன் குறைவு',
+  'Reason': 'காரணம்',
+  'Becomes': 'ஆகும்',
+  'Saved': 'சேமிக்கப்பட்டது',
+  'More': 'மேலும்',
+  'Showing the latest': 'சமீபத்தியவை',
+  'The statement has everything.': 'அறிக்கையில் அனைத்தும் உள்ளது.',
+
+  // The shop logo
+  'Logo': 'சின்னம்',
+  'Choose logo': 'சின்னம் தேர்வு',
+  'Change logo': 'சின்னம் மாற்று',
+  'Remove logo': 'சின்னம் நீக்கு',
+  'Printed at the top of every receipt.': 'ஒவ்வொரு ரசீதின் மேலும் அச்சாகும்.',
+
+  // Cheques now credit the account straight away
+  'Already taken off the balance above.':
+      'மேலே உள்ள நிலுவையில் இருந்து கழிக்கப்பட்டது.',
+  'Already taken off customer balances.':
+      'வாடிக்கையாளர் நிலுவைகளில் கழிக்கப்பட்டது.',
+  'The balance already came down when you took it.':
+      'பெற்றபோதே நிலுவை குறைந்துவிட்டது.',
+  'The amount goes back on their account.': 'தொகை மீண்டும் கணக்கில் சேரும்.',
+  'If the cheque comes back unpaid, mark it returned and the amount goes back on.':
+      'காசோலை திரும்பினால் "திரும்பியது" எனக் குறிக்கவும்; தொகை மீண்டும் சேரும்.',
+  'day left': 'நாள் உள்ளது',
+  'days left': 'நாட்கள் உள்ளன',
 };
 
 // ---------------------------------------------------------------- colours

@@ -155,10 +155,75 @@ class _CustomerScreenState extends State<CustomerScreen> {
     if (mounted) _reload();
   }
 
+  /// Everything that is not day-to-day counter work. It lives in the app bar
+  /// menu because it used to live under the transaction list, where a customer
+  /// with a year of history had to be scrolled past to reach Delete.
+  Future<void> _menu(String choice, Customer c) async {
+    switch (choice) {
+      case 'statement':
+        await showStatement(context, c.id);
+      case 'adjust':
+      case 'opening':
+        final done = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+                builder: (_) => AdjustScreen(c, opening: choice == 'opening')));
+        if (done == true) _reload();
+      case 'edit':
+        final r = await Navigator.push<String>(
+            context, MaterialPageRoute(builder: (_) => CustomerForm(customer: c)));
+        if (r != null) _reload();
+      case 'delete':
+        if (!await ask(context, '${t('Delete')} "${c.name}"?', t('Delete'))) return;
+        if (!mounted) return;
+        final ok =
+            await guard(context, () => s.deleteCustomer(c.id).then((_) => true));
+        if (ok == true && mounted) Navigator.pop(context);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(backgroundColor: C.customers, title: Text(t('Customers'))),
-        body: FutureBuilder(
+        appBar: AppBar(
+          backgroundColor: C.customers,
+          title: Text(t('Customers')),
+          actions: [
+            FutureBuilder(
+              future: _data,
+              builder: (_, snap) {
+                final c = snap.data?.$1;
+                if (c == null) return const SizedBox.shrink();
+                return PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  tooltip: t('More'),
+                  onSelected: (v) => _menu(v, c),
+                  itemBuilder: (_) => [
+                    for (final (value, icon, text) in const [
+                      ('statement', Icons.receipt_long, 'Statement'),
+                      ('adjust', Icons.tune, 'Adjust balance'),
+                      ('opening', Icons.history_edu, 'Balance before this app'),
+                      ('edit', Icons.edit, 'Edit'),
+                      ('delete', Icons.delete_outline, 'Delete'),
+                    ])
+                      PopupMenuItem(
+                        value: value,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(icon,
+                              color: value == 'delete' ? C.owe : C.customers),
+                          title: Text(t(text)),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+        // Three-button navigation keeps a bar across the bottom of the screen,
+        // and the last row of the account would otherwise sit under it.
+        body: SafeArea(
+            child: FutureBuilder(
           future: _data,
           builder: (_, snap) {
             if (!snap.hasData) {
@@ -171,6 +236,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
                 if (x.type == 'payment_cancelled') x.refId
             };
             final b = balanceLabel(c.balance);
+            // Only the recent end of the account is drawn. A customer with a
+            // thousand entries would otherwise build a thousand cards to show
+            // the twenty that matter; the statement is where the rest lives.
+            final shown = entries.take(_historyShown).toList();
             return ListView(padding: const EdgeInsets.all(16), children: [
               Text(c.name,
                   textAlign: TextAlign.center,
@@ -216,6 +285,15 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   ),
                 ),
               ]),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                    foregroundColor: C.history),
+                icon: const Icon(Icons.receipt_long),
+                label: Fit(t('Statement')),
+                onPressed: () => showStatement(context, c.id),
+              ),
               if (waiting.isNotEmpty) ...[
                 const SizedBox(height: 22),
                 Row(children: [
@@ -231,7 +309,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   const SizedBox(width: 8),
                   Money(waiting.fold(0, (a, h) => a + h.amount), color: C.quote),
                 ]),
-                Text(t('Not counted in the balance until the bank pays.'),
+                Text(t('Already taken off the balance above.'),
                     style: const TextStyle(fontSize: 13, color: Colors.black54)),
                 const SizedBox(height: 8),
                 for (final h in waiting)
@@ -247,39 +325,220 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   child: Text(t('Nothing here yet'),
                       style: const TextStyle(color: Colors.black54, fontSize: 16)),
                 ),
-              for (final e in entries)
+              for (final e in shown)
                 _LedgerRow(e, c, docs,
                     undone: reversed.contains(e.id), onChanged: _reload),
+              if (entries.length > shown.length)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                      '${t('Showing the latest')} ${shown.length} / ${entries.length}. '
+                      '${t('The statement has everything.')}',
+                      style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                ),
               const SizedBox(height: 24),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
-                icon: const Icon(Icons.edit),
-                label: Text(t('Edit')),
-                onPressed: () async {
-                  final r = await Navigator.push<String>(context,
-                      MaterialPageRoute(builder: (_) => CustomerForm(customer: c)));
-                  if (r != null) _reload();
-                },
-              ),
-              const SizedBox(height: 8),
-              TextButton.icon(
-                style: TextButton.styleFrom(foregroundColor: C.owe),
-                icon: const Icon(Icons.delete_outline),
-                label: Text(t('Delete')),
-                onPressed: () async {
-                  if (!await ask(context, '${t('Delete')} "${c.name}"?', t('Delete'))) {
-                    return;
-                  }
-                  if (!context.mounted) return;
-                  final ok = await guard(
-                      context, () => s.deleteCustomer(c.id).then((_) => true));
-                  if (ok == true && context.mounted) Navigator.pop(context);
-                },
-              ),
             ]);
           },
-        ),
+        )),
       );
+}
+
+/// How much of the account is drawn on the customer page itself.
+const _historyShown = 50;
+
+/// The whole account on one document: what was billed, what was paid, when, and
+/// what is left. Cheques already credited but not yet at the bank are called
+/// out by name, because the customer will otherwise wonder where the money went.
+Future<void> showStatement(BuildContext context, String customerId) async {
+  final c = await s.customer(customerId);
+  if (c == null || !context.mounted) return;
+  final entries = await s.ledger(customerId);
+  final docs = await s.docs(customerId: customerId);
+  final waiting = await s.cheques(customerId: customerId, status: 'pending');
+  if (!context.mounted) return;
+
+  final byId = {for (final d in docs) d.id: d};
+  var billed = 0, paid = 0;
+  for (final e in entries) {
+    if (e.amount > 0) {
+      billed += e.amount;
+    } else {
+      paid += -e.amount;
+    }
+  }
+
+  // English only, like every other receipt: the PDF has no Tamil font.
+  String detail(LedgerEntry e) {
+    final ref = byId[e.refId];
+    final tag = ref == null ? '' : ' #${ref.no}';
+    return switch (e.type) {
+      'sale' => 'Sale$tag',
+      'sale_cancelled' => 'Sale$tag cancelled',
+      'return' => 'Goods returned$tag',
+      'payment' => e.note.isEmpty ? 'Payment received' : e.note,
+      'payment_cancelled' => e.note.isEmpty ? 'Payment undone' : e.note,
+      'opening' => e.note.isEmpty ? 'Balance brought forward' : e.note,
+      'adjustment' => e.note.isEmpty ? 'Adjustment' : e.note,
+      _ => e.type,
+    };
+  }
+
+  await showReceipt(
+    context,
+    Receipt(
+      kind: 'Statement',
+      no: 0,
+      date: DateTime.now().millisecondsSinceEpoch,
+      customer: c.name,
+      customerPhone: c.phone,
+      reference: 'Account as it stands on ${onDay(DateTime.now())}',
+      // Oldest first: a statement is read downwards, the way it was built up.
+      statement: [
+        for (final e in entries.reversed)
+          (onDayMs(e.createdAt), detail(e), e.amount, e.balanceAfter)
+      ],
+      totals: [
+        (
+          c.balance > 0
+              ? 'Balance due'
+              : c.balance < 0
+                  ? 'Advance held'
+                  : 'Account settled',
+          c.balance.abs()
+        ),
+        ('Total billed', billed),
+        ('Total paid', paid),
+      ],
+      notes: [
+        for (final h in waiting)
+          'Cheque ${h.chequeNo}${h.bank.isEmpty ? '' : ' (${h.bank})'} for '
+              '${money(h.amount)} is already taken off this balance. '
+              '${h.daysLeft == 0 ? 'It can be banked now.' : 'It can be banked on ${onDayMs(h.dueAt)}, ${h.daysLeft} day${h.daysLeft == 1 ? '' : 's'} from now.'}',
+        if (waiting.isNotEmpty)
+          'If a cheque is returned unpaid, its amount goes back onto the balance.',
+        if (c.balance > 0)
+          'Please settle ${money(c.balance)} at your earliest convenience.',
+      ],
+      footnote: 'This statement lists every entry on the account to date.',
+    ),
+  );
+}
+
+/// A correction made by hand. Two doors into the same ledger entry: a general
+/// adjustment, and the balance a customer already owed before this app existed.
+class AdjustScreen extends StatefulWidget {
+  final Customer customer;
+  final bool opening;
+  const AdjustScreen(this.customer, {this.opening = false, super.key});
+  @override
+  State<AdjustScreen> createState() => _AdjustScreenState();
+}
+
+class _AdjustScreenState extends State<AdjustScreen> {
+  final _amount = TextEditingController();
+  late final _note = TextEditingController(
+      text: widget.opening ? t('Owed before this app') : '');
+
+  /// True when the entry makes the customer owe more.
+  bool _owesMore = true;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final v = parseMoney(_amount.text) ?? 0;
+    final id = await guard(
+        context,
+        () => s.adjustBalance(widget.customer.id, _owesMore ? v : -v,
+            note: _note.text.trim(), opening: widget.opening));
+    if (id == null || !mounted) return;
+    toast(context, t('Saved'));
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final v = parseMoney(_amount.text) ?? 0;
+    final after = widget.customer.balance + (_owesMore ? v : -v);
+    final title = widget.opening ? 'Balance before this app' : 'Adjust balance';
+
+    return Scaffold(
+      appBar: AppBar(backgroundColor: C.settings, title: Text(t(title))),
+      body: SafeArea(
+          child: ListView(padding: const EdgeInsets.all(16), children: [
+        Text(widget.customer.name,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        Text(
+            t(widget.opening
+                ? 'What this customer already owed you before you started using this app.'
+                : 'Use this only to correct the books. Every adjustment stays on the account.'),
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 14, color: Colors.black54)),
+        const SizedBox(height: 18),
+        if (!widget.opening) ...[
+          SegmentedButton<bool>(
+            style: SegmentedButton.styleFrom(
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                selectedBackgroundColor: _owesMore ? C.owe : C.advance,
+                selectedForegroundColor: Colors.white),
+            segments: [
+              ButtonSegment(
+                  value: true,
+                  label: Fit(t('Owes more')),
+                  icon: const Icon(Icons.arrow_upward)),
+              ButtonSegment(
+                  value: false,
+                  label: Fit(t('Owes less')),
+                  icon: const Icon(Icons.arrow_downward)),
+            ],
+            selected: {_owesMore},
+            onSelectionChanged: (x) => setState(() => _owesMore = x.first),
+          ),
+          const SizedBox(height: 16),
+        ],
+        NumField(_amount, '${t('Amount')} (Rs.)', Icons.tune,
+            autofocus: true, onChanged: (_) => setState(() {})),
+        const SizedBox(height: 14),
+        TextField(
+          controller: _note,
+          decoration: InputDecoration(labelText: t('Reason')),
+        ),
+        const SizedBox(height: 18),
+        if (v > 0)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: balanceLabel(after).color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(16)),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Flexible(child: Text(t('Becomes'), style: const TextStyle(fontSize: 16))),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(balanceLabel(after).text,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: balanceLabel(after).color)),
+              ),
+            ]),
+          ),
+        const SizedBox(height: 20),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(backgroundColor: C.settings),
+          icon: const Icon(Icons.check),
+          label: Text(t('Save')),
+          onPressed: _save,
+        ),
+      ])),
+    );
+  }
 }
 
 /// Reopens a payment receipt from the stored ledger entry, so a receipt can be
@@ -330,6 +589,8 @@ class _LedgerRow extends StatelessWidget {
     'return': (Icons.assignment_return, C.ret, 'Return'),
     'sale_cancelled': (Icons.cancel, Colors.grey, 'Sale cancelled'),
     'payment_cancelled': (Icons.undo, Colors.grey, 'Payment undone'),
+    'opening': (Icons.history_edu, C.owe, 'Balance before this app'),
+    'adjustment': (Icons.tune, C.settings, 'Adjustment'),
   };
 
   Future<void> _undo(BuildContext context) async {
@@ -363,7 +624,10 @@ class _LedgerRow extends StatelessWidget {
         leading: CircleAvatar(
             backgroundColor: color.withValues(alpha: 0.15),
             child: Icon(icon, color: color)),
-        title: Text(t(label), style: const TextStyle(fontWeight: FontWeight.w600)),
+        // The document number is what turns a row into something the customer
+        // can be answered about — "the 4,000 on the 3rd" is Sale #12.
+        title: Text('${t(label)}${doc == null ? '' : ' #${doc.no}'}',
+            style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(
             [when(e.createdAt), if (e.note.isNotEmpty) e.note].join('\n'),
             style: const TextStyle(fontSize: 13)),
@@ -622,29 +886,29 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 color: (_byCheque ? C.quote : balanceLabel(after).color)
                     .withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(16)),
-            child: _byCheque
-                // A waiting cheque changes nothing yet, and saying so here is
-                // the whole point of keeping it out of the ledger.
-                ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(t('Balance stays at'), style: const TextStyle(fontSize: 15)),
-                    const SizedBox(height: 2),
-                    Text(balanceLabel(owed).text,
-                        style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            color: balanceLabel(owed).color)),
-                    const SizedBox(height: 4),
-                    Text(t('It goes down when you mark the cheque banked.'),
-                        style: const TextStyle(fontSize: 13, color: Colors.black54)),
-                  ])
-                : Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(t('After payment'), style: const TextStyle(fontSize: 16)),
-                    Text(balanceLabel(after).text,
-                        style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            color: balanceLabel(after).color)),
-                  ]),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Flexible(
+                    child: Text(t('After payment'),
+                        style: const TextStyle(fontSize: 16))),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(balanceLabel(after).text,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: balanceLabel(after).color)),
+                ),
+              ]),
+              // A cheque comes off the balance now, so the one thing left to
+              // say is what happens on the day it does not clear.
+              if (_byCheque) ...[
+                const SizedBox(height: 4),
+                Text(t('If the cheque comes back unpaid, mark it returned and the amount goes back on.'),
+                    style: const TextStyle(fontSize: 13, color: Colors.black54)),
+              ],
+            ]),
           ),
         const SizedBox(height: 20),
         FilledButton.icon(

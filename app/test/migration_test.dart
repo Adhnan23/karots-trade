@@ -125,8 +125,54 @@ void main() {
         chequeNo: '400123',
         amount: 30000,
         dueAt: DateTime.now().millisecondsSinceEpoch);
-    expect(await balance('c1'), 30000, reason: 'still owed until it clears');
+    expect(await balance('c1'), 0, reason: 'a cheque credits the account at once');
     await clearCheque(ch);
-    expect(await balance('c1'), 0);
+    expect(await balance('c1'), 0, reason: 'confirming it moves nothing again');
+
+    // Adjustments arrived later still, and land on a database that never had
+    // one — including the balance the customer walked in with.
+    await adjustBalance('c1', 5000, note: 'Old debt', opening: true);
+    expect(await balance('c1'), 5000);
+  });
+
+  test('cheques taken before v5 get the credit the new rule gives them',
+      () async {
+    // v4 kept a waiting cheque out of the ledger. v5 credits it on arrival, so
+    // the upgrade owes every cheque still waiting the payment row it missed.
+    final db = await databaseFactory.openDatabase(path,
+        options: OpenDatabaseOptions(
+            version: 4,
+            onCreate: (d, _) async {
+              for (final st in schema) {
+                await d.execute(st);
+              }
+            }));
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.insert('customers',
+        {'id': 'c1', 'name': 'Old Shop', 'created_at': now, 'updated_at': now});
+    await db.insert('ledger', {
+      'id': 'l1', 'no': 0, 'customer_id': 'c1', 'type': 'sale',
+      'amount': 100000, 'created_at': now,
+    });
+    for (final (id, no, amount, status) in [
+      ('h1', 1, 30000, 'pending'),
+      ('h2', 2, 20000, 'bounced'),
+    ]) {
+      await db.insert('cheques', {
+        'id': id, 'no': no, 'customer_id': 'c1', 'cheque_no': '4001$no',
+        'amount': amount, 'due_at': now, 'status': status, 'created_at': now,
+      });
+    }
+    await db.close();
+
+    await openDb(path: path);
+
+    expect(await balance('c1'), 70000,
+        reason: 'the waiting cheque now comes off the balance');
+    final waiting = (await cheques(status: 'pending')).single;
+    expect(waiting.ledgerId, isNotNull, reason: 'linked to the row it wrote');
+    expect((await ledgerEntry(waiting.ledgerId!))!.amount, -30000);
+    expect((await ledger('c1')).where((e) => e.type == 'payment'), hasLength(1),
+        reason: 'the bounced one is not resurrected');
   });
 }

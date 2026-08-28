@@ -606,21 +606,19 @@ void main() {
       expect(() => undoPayment(fix), throwsA(isA<Exception>()));
     });
 
-    test('a cheque ticked off by mistake goes back to waiting', () async {
+    test('a cheque credited by mistake comes back off', () async {
       await sell();
       final ch = await saveCheque(
           customerId: cid, chequeNo: '400123', amount: rs(400), dueAt: 0);
-      final paymentId = await clearCheque(ch);
+      final paymentId = (await oneCheque(ch))!.ledgerId!;
 
       expect(await balance(cid), rs(300));
 
       await undoPayment(paymentId);
 
-      final back = (await oneCheque(ch))!;
-      expect(back.isPending, isTrue, reason: 'it can be banked or returned properly');
-      expect(back.ledgerId, isNull);
-      expect(await balance(cid), rs(700), reason: 'the money was never really in');
-      expect((await stats()).cheques, rs(400), reason: 'waiting again');
+      expect((await oneCheque(ch))!.isBounced, isTrue);
+      expect(await balance(cid), rs(700), reason: 'the money is owed again');
+      expect((await stats()).cheques, 0, reason: 'nothing riding on the bank');
     });
 
     test('undoing one payment leaves the others settling as before', () async {
@@ -634,6 +632,76 @@ void main() {
 
       expect((await doc(sale))!.settled, rs(300), reason: 'the good payment stands');
       expect((await doc(sale))!.due, rs(400));
+    });
+  });
+
+  group('adjustments and money owed from before', () {
+    late String pid, bid, cid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 20);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    Future<String> sell({int qty = 10}) => saveDoc(customerId: cid, quote: false, lines: [
+          SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty)
+        ]);
+
+    test('an opening balance is what they owed before any of this', () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+
+      expect(await balance(cid), rs(2000));
+      final e = (await ledger(cid)).single;
+      expect(e.type, 'opening');
+      expect(e.amount, rs(2000));
+    });
+
+    test('an opening balance cannot be entered twice', () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+
+      expect(() => adjustBalance(cid, rs(2000), opening: true),
+          throwsA(isA<Exception>()));
+      expect(await balance(cid), rs(2000), reason: 'not doubled');
+    });
+
+    test('money paid clears the old debt before it touches a new sale',
+        () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+      final sale = await sell(); // Rs. 700
+
+      await recordPayment(cid, rs(2000));
+
+      expect(await balance(cid), rs(700));
+      expect((await doc(sale))!.due, rs(700),
+          reason: 'the payment went to what was owed first, not to this bill');
+
+      await recordPayment(cid, rs(700));
+      expect((await doc(sale))!.due, 0);
+      expect(await balance(cid), 0);
+    });
+
+    test('an adjustment can put more on or let them off', () async {
+      final sale = await sell(); // Rs. 700
+
+      await adjustBalance(cid, rs(100), note: 'Delivery charge');
+      expect(await balance(cid), rs(800));
+
+      await adjustBalance(cid, -rs(300), note: 'Goodwill');
+      expect(await balance(cid), rs(500));
+      expect((await doc(sale))!.settled, rs(300),
+          reason: 'letting them off counts against the bill like a payment');
+    });
+
+    test('an adjustment of nothing is refused', () async {
+      expect(() => adjustBalance(cid, 0), throwsA(isA<Exception>()));
+      expect(await ledger(cid), isEmpty);
+    });
+
+    test('a customer carrying an old debt cannot be deleted away', () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+      expect(() => deleteCustomer(cid), throwsA(isA<Exception>()));
+      expect(await balance(cid), rs(2000));
     });
   });
 
@@ -810,54 +878,80 @@ void main() {
       ]);
     });
 
-    test('a cheque taken in does not reduce what is owed', () async {
+    test('a cheque taken in comes off what is owed straight away', () async {
       final owed = await balance(cid);
       await aCheque(amount: rs(400));
 
-      expect(await balance(cid), owed, reason: 'a promise is not money');
-      expect(await ledger(cid), hasLength(1), reason: 'only the sale is on the ledger');
-      expect((await stats()).cheques, rs(400), reason: 'but it is visible as waiting');
+      expect(await balance(cid), owed - rs(400),
+          reason: 'the counter treats a cheque as settled up');
+      expect(await ledger(cid), hasLength(2), reason: 'the sale and its payment');
+      expect((await stats()).cheques, rs(400),
+          reason: 'still flagged as riding on the bank');
     });
 
-    test('banking it credits the account and settles the bill', () async {
+    test('taking a cheque settles the bill it covers', () async {
       final owed = await balance(cid);
       final id = await aCheque(amount: owed);
 
-      await clearCheque(id);
-
       expect(await balance(cid), 0);
-      expect((await oneCheque(id))!.isCleared, isTrue);
       expect((await docs(kind: 'sale')).single.due, 0,
-          reason: 'the cheque settled the sale like any other payment');
-      expect((await stats()).cheques, 0, reason: 'no longer waiting');
+          reason: 'it settles like any other payment');
+      expect((await oneCheque(id))!.isPending, isTrue,
+          reason: 'credited, but the bank has not confirmed it yet');
     });
 
-    test('a banked cheque leaves a numbered payment that can be reprinted',
-        () async {
+    test('a cheque leaves a numbered payment that can be reprinted', () async {
       final id = await aCheque(amount: rs(400));
-      final ledgerId = await clearCheque(id);
 
+      final ledgerId = (await oneCheque(id))!.ledgerId!;
       final e = (await ledgerEntry(ledgerId))!;
       expect(e.type, 'payment');
       expect(e.amount, -rs(400));
       expect(e.no, greaterThan(0), reason: 'a receipt number to hand over');
       expect(e.note, contains('400123'), reason: 'says which cheque it was');
-      expect((await oneCheque(id))!.ledgerId, ledgerId);
     });
 
-    test('a bounced cheque has nothing to unwind', () async {
+    test('marking it banked confirms it without moving the money again',
+        () async {
+      final id = await aCheque(amount: rs(400));
+      final after = await balance(cid);
+
+      await clearCheque(id);
+
+      expect(await balance(cid), after, reason: 'it was already credited');
+      expect((await oneCheque(id))!.isCleared, isTrue);
+      expect(await ledger(cid), hasLength(2), reason: 'no second payment row');
+      expect((await stats()).cheques, 0, reason: 'no longer riding on the bank');
+    });
+
+    test('a bounced cheque puts the amount back on the account', () async {
       final owed = await balance(cid);
       final id = await aCheque(amount: rs(400));
+      expect(await balance(cid), owed - rs(400));
 
       await bounceCheque(id);
 
-      expect(await balance(cid), owed, reason: 'they still owe exactly what they did');
-      expect(await ledger(cid), hasLength(1), reason: 'no reversal entry needed');
+      expect(await balance(cid), owed, reason: 'they owe exactly what they did');
+      expect((await docs(kind: 'sale')).single.due, owed,
+          reason: 'the bill it had cleared re-opens on its own');
       expect((await oneCheque(id))!.isBounced, isTrue);
       expect((await stats()).cheques, 0);
+      expect(await ledger(cid), hasLength(3),
+          reason: 'sale, credit and its reversal all stay on the account');
     });
 
-    test('banking the same cheque twice cannot credit it twice', () async {
+    test('bouncing the same cheque twice cannot charge them twice', () async {
+      final id = await aCheque(amount: rs(400));
+      await bounceCheque(id);
+      final after = await balance(cid);
+
+      expect(() => bounceCheque(id), throwsA(isA<Exception>()));
+
+      expect(await balance(cid), after);
+      expect(await ledger(cid), hasLength(3));
+    });
+
+    test('marking the same cheque banked twice changes nothing', () async {
       final id = await aCheque(amount: rs(400));
       await clearCheque(id);
       final after = await balance(cid);
@@ -868,19 +962,26 @@ void main() {
       expect(await ledger(cid), hasLength(2), reason: 'sale and one payment only');
     });
 
-    test('a bounced cheque can be presented again', () async {
+    test('a cheque already banked cannot then be marked returned', () async {
       final id = await aCheque(amount: rs(400));
-      await bounceCheque(id);
       await clearCheque(id);
+      final after = await balance(cid);
 
-      expect((await oneCheque(id))!.isCleared, isTrue);
-      expect(await balance(cid), rs(700) - rs(400));
+      expect(() => clearCheque(id), throwsA(isA<Exception>()));
+      expect(await balance(cid), after);
     });
 
-    test('a cheque already banked cannot be marked returned', () async {
+    test('undoing a cheque payment marks the cheque returned', () async {
       final id = await aCheque(amount: rs(400));
-      await clearCheque(id);
-      expect(() => bounceCheque(id), throwsA(isA<Exception>()));
+      final ledgerId = (await oneCheque(id))!.ledgerId!;
+      final owed = await balance(cid);
+
+      await undoPayment(ledgerId);
+
+      expect((await oneCheque(id))!.isBounced, isTrue,
+          reason: 'pulling the credit is the same event as the bank refusing it');
+      expect(await balance(cid), owed + rs(400));
+      expect((await stats()).cheques, 0);
     });
 
     test('a cheque needs a number and a real amount', () async {

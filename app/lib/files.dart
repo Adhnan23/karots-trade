@@ -26,6 +26,15 @@ class Receipt {
   final List<(String name, int qty, int price)> lines;
   final List<(String label, int amount)> totals;
 
+  /// A running account, printed instead of item lines: every entry with the
+  /// balance as it stood right after it. A figure on its own invites an
+  /// argument; the same figure with the dates that built it does not.
+  final List<(String date, String detail, int amount, int balance)> statement;
+
+  /// Plain sentences under the totals — where a statement spells out the
+  /// cheques it has already credited but the bank has not reached yet.
+  final List<String> notes;
+
   const Receipt({
     required this.kind,
     required this.no,
@@ -36,11 +45,18 @@ class Receipt {
     this.footnote,
     this.lines = const [],
     this.totals = const [],
+    this.statement = const [],
+    this.notes = const [],
   });
 
   /// Sale-0007.pdf, Payment-0012.pdf — same rule for every document.
-  String get fileName => '$kind-${no.toString().padLeft(4, '0')}';
-  String get number => '${kind[0]}${no.toString().padLeft(4, '0')}';
+  ///
+  /// A statement is the one thing here with no number of its own: it is not a
+  /// document that was issued once, it is the account as it stands today.
+  String get fileName => no == 0
+      ? '$kind-${DateTime.fromMillisecondsSinceEpoch(date).toIso8601String().substring(0, 10)}'
+      : '$kind-${no.toString().padLeft(4, '0')}';
+  String get number => no == 0 ? '' : '${kind[0]}${no.toString().padLeft(4, '0')}';
 }
 
 /// [compress] is only turned off by tests, so they can read the text back out
@@ -54,15 +70,32 @@ Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
   pw.Widget label(String v) => pw.Text(v.toUpperCase(),
       style: pw.TextStyle(fontSize: 7, letterSpacing: 1.4, color: grey));
 
-  doc.addPage(pw.Page(
-    pageFormat: PdfPageFormat.a5,
-    margin: const pw.EdgeInsets.fromLTRB(28, 28, 28, 24),
-    build: (_) => pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-      // Header: who this is from, and what the document is.
-      pw.Row(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
+  // A logo the PDF library cannot decode must not cost the seller a receipt,
+  // so a bad one simply does not print.
+  pw.ImageProvider? logo;
+  final logoBytes = s.businessLogo;
+  if (logoBytes != null) {
+    try {
+      logo = pw.MemoryImage(logoBytes);
+    } catch (_) {
+      logo = null;
+    }
+  }
+
+  final head = <pw.Widget>[
+    // Header: who this is from, and what the document is.
+    pw.Row(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      children: [
+        pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+          if (logo != null) ...[
+            pw.SizedBox(
+                width: 40,
+                height: 40,
+                child: pw.Image(logo, fit: pw.BoxFit.contain)),
+            pw.SizedBox(width: 10),
+          ],
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
             pw.Text(business,
                 style: pw.TextStyle(fontSize: 17, fontWeight: pw.FontWeight.bold)),
@@ -70,18 +103,21 @@ Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
               pw.Text(s.businessPhone,
                   style: const pw.TextStyle(fontSize: 9, color: grey)),
           ]),
-          pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
-            label(r.kind),
-            pw.Text(r.number,
-                style: pw.TextStyle(fontSize: 15, fontWeight: pw.FontWeight.bold)),
-            pw.Text(when(r.date), style: const pw.TextStyle(fontSize: 8, color: grey)),
-          ]),
-        ],
-      ),
-      pw.SizedBox(height: 10),
-      pw.Divider(height: 1, thickness: 1, color: rule),
-      pw.SizedBox(height: 10),
+        ]),
+        pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
+          label(r.kind),
+          pw.Text(r.number,
+              style: pw.TextStyle(fontSize: 15, fontWeight: pw.FontWeight.bold)),
+          pw.Text(when(r.date), style: const pw.TextStyle(fontSize: 8, color: grey)),
+        ]),
+      ],
+    ),
+    pw.SizedBox(height: 10),
+    pw.Divider(height: 1, thickness: 1, color: rule),
+    pw.SizedBox(height: 10),
+  ];
 
+  final body = <pw.Widget>[
       if (r.customer != null) ...[
         label('To'),
         pw.SizedBox(height: 2),
@@ -123,6 +159,40 @@ Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
           ],
         ),
 
+      if (r.statement.isNotEmpty)
+        pw.TableHelper.fromTextArray(
+          headers: ['Date', 'Detail', 'Amount', 'Balance'],
+          headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+          headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF3F4F6)),
+          cellStyle: const pw.TextStyle(fontSize: 8.5),
+          cellPadding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+          border: const pw.TableBorder(
+              horizontalInside: pw.BorderSide(color: rule, width: 0.5)),
+          columnWidths: {
+            0: const pw.FlexColumnWidth(2.4),
+            1: const pw.FlexColumnWidth(4.2),
+            2: const pw.FlexColumnWidth(2.2),
+            3: const pw.FlexColumnWidth(2.2),
+          },
+          cellAlignments: {
+            0: pw.Alignment.centerLeft,
+            1: pw.Alignment.centerLeft,
+            2: pw.Alignment.centerRight,
+            3: pw.Alignment.centerRight,
+          },
+          data: [
+            for (final (date, detail, amount, balance) in r.statement)
+              [
+                date,
+                detail,
+                // Signed, so the customer can read which way each line moved
+                // the account without a legend.
+                '${amount < 0 ? '-' : ''}${money(amount.abs())}',
+                money(balance),
+              ]
+          ],
+        ),
+
       pw.SizedBox(height: 12),
       pw.Align(
         alignment: pw.Alignment.centerRight,
@@ -153,15 +223,51 @@ Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
         ),
       ),
 
-      pw.Spacer(),
-      pw.Divider(height: 1, thickness: 0.5, color: rule),
-      pw.SizedBox(height: 6),
-      pw.Text(r.footnote ?? 'Thank you',
-          style: const pw.TextStyle(fontSize: 8, color: grey)),
-      pw.SizedBox(height: 3),
-      pw.Text(credit, style: const pw.TextStyle(fontSize: 6.5, color: grey)),
-    ]),
-  ));
+      if (r.notes.isNotEmpty) ...[
+        pw.SizedBox(height: 10),
+        for (final n in r.notes) ...[
+          // A dash, not a bullet: the built-in PDF font has no glyph for one
+          // and silently drops it.
+          pw.Text('-  $n', style: const pw.TextStyle(fontSize: 8.5)),
+          pw.SizedBox(height: 2),
+        ],
+      ],
+  ];
+
+  final tail = <pw.Widget>[
+    pw.Divider(height: 1, thickness: 0.5, color: rule),
+    pw.SizedBox(height: 6),
+    pw.Text(r.footnote ?? 'Thank you',
+        style: const pw.TextStyle(fontSize: 8, color: grey)),
+    pw.SizedBox(height: 3),
+    pw.Text(credit, style: const pw.TextStyle(fontSize: 6.5, color: grey)),
+  ];
+
+  const format = PdfPageFormat.a5;
+  const margin = pw.EdgeInsets.fromLTRB(28, 28, 28, 24);
+
+  if (r.statement.isEmpty) {
+    // One page, with the footnote pushed to the bottom of it.
+    doc.addPage(pw.Page(
+      pageFormat: format,
+      margin: margin,
+      build: (_) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [...head, ...body, pw.Spacer(), ...tail]),
+    ));
+  } else {
+    // An account with a year on it does not fit a page, and cutting it off is
+    // the one thing a statement must not do.
+    doc.addPage(pw.MultiPage(
+      pageFormat: format,
+      margin: margin,
+      build: (_) => [...head, ...body],
+      footer: (_) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          mainAxisSize: pw.MainAxisSize.min,
+          children: tail),
+    ));
+  }
   return doc.save();
 }
 
@@ -181,7 +287,7 @@ class ReceiptScreen extends StatelessWidget {
         backgroundColor: const Color(0xFF2B2E3B),
         appBar: AppBar(
           backgroundColor: const Color(0xFF2B2E3B),
-          title: Text('${t(receipt.kind)} ${receipt.number}'),
+          title: Text('${t(receipt.kind)} ${receipt.number}'.trim()),
         ),
         body: PdfPreview(
           build: (_) => buildReceipt(receipt),

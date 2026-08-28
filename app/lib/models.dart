@@ -111,8 +111,8 @@ class DocItem {
         returned = _i(r['returned']);
 }
 
-/// A cheque handed over as payment. It is not money until the bank says so,
-/// which is why it is kept apart from the ledger until it clears.
+/// A cheque handed over as payment. It credits the account straight away; the
+/// status here says whether the bank has since confirmed it or sent it back.
 class Cheque {
   final String id, customerId, customerName, customerPhone;
   final String chequeNo, bank, status, note;
@@ -126,6 +126,13 @@ class Cheque {
 
   /// The date on the cheque has arrived, so it can be taken to the bank.
   bool get isDue => isPending && dueAt <= DateTime.now().millisecondsSinceEpoch;
+
+  /// Days until it can be banked, never negative. 0 means today or overdue,
+  /// which is what a statement prints as "ready to bank".
+  int get daysLeft {
+    final ms = dueAt - DateTime.now().millisecondsSinceEpoch;
+    return ms <= 0 ? 0 : (ms / Duration.millisecondsPerDay).ceil();
+  }
 
   Cheque.fromRow(SqlRow r)
       : id = _s(r['id']),

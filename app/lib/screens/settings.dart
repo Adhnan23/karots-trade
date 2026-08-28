@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core.dart';
 import '../files.dart';
+import '../photo.dart';
 import '../store.dart' as s;
 
 class SettingsScreen extends StatefulWidget {
@@ -95,6 +96,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   labelText: t('Business phone'), prefixIcon: const Icon(Icons.phone)),
               onChanged: (v) => s.setSetting('business_phone', v.trim()),
             ),
+            const SizedBox(height: 16),
+            Text(t('Logo'),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(t('Printed at the top of every receipt.'),
+                style: const TextStyle(fontSize: 14, color: Colors.black54)),
+            const SizedBox(height: 10),
+            Row(children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(14)),
+                clipBehavior: Clip.antiAlias,
+                child: s.businessLogo == null
+                    ? const Icon(Icons.storefront, size: 34, color: Colors.black38)
+                    : Image.memory(s.businessLogo!, fit: BoxFit.contain),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(children: [
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(46),
+                        foregroundColor: C.products),
+                    icon: const Icon(Icons.image),
+                    label: Fit(t(s.businessLogo == null ? 'Choose logo' : 'Change logo')),
+                    onPressed: () => _run(() async {
+                      final bytes = await pickPhoto(context);
+                      if (bytes == null) return;
+                      await s.setBusinessLogo(bytes);
+                      setState(() {});
+                    }),
+                  ),
+                  if (s.businessLogo != null)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(foregroundColor: C.owe),
+                      icon: const Icon(Icons.close),
+                      label: Fit(t('Remove logo')),
+                      onPressed: () => _run(() async {
+                        await s.setBusinessLogo(null);
+                        setState(() {});
+                      }),
+                    ),
+                ]),
+              ),
+            ]),
             const Divider(height: 40),
             Text(t('Products screen'),
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),

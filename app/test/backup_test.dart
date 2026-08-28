@@ -19,6 +19,7 @@ Future<void> seed() async {
   await setSetting('business_phone', '077 123 4567');
   await setSetting('language', 'ta');
   await setSetting('product_view', 'list');
+  await setBusinessLogo(photo);
 
   final cola = await saveProduct(name: 'Coca-Cola 1L', image: photo);
   final soap = await saveProduct(name: 'Soap');
@@ -125,6 +126,7 @@ void main() {
     expect(businessName, 'Karots Traders');
     expect(settings['language'], 'ta');
     expect(productsAsCards, isFalse);
+    expect(businessLogo, photo, reason: 'the shop logo survived');
 
     final cola = (await products(q: 'Coca')).single;
     expect(cola.image, photo, reason: 'product photo survived');

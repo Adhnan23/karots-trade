@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -371,6 +372,46 @@ Future<String> recordPayment(String customerId, int amount, {String note = ''}) 
   return id;
 }
 
+/// A correction made by hand, and the one way a balance moves without a sale
+/// or a payment behind it.
+///
+/// [amount] is signed the way the ledger is: positive means the customer owes
+/// more, negative means they owe less. [opening] marks the balance a customer
+/// walked in with — what they already owed before any of this was on a phone —
+/// and it is backdated to the day they were added so every later payment
+/// settles it first.
+Future<String> adjustBalance(String customerId, int amount,
+    {String note = '', bool opening = false}) async {
+  if (amount == 0) throw Exception('Enter an amount to adjust');
+  final id = uid();
+  await db.transaction((tx) async {
+    final c = await tx.query('customers', where: 'id = ?', whereArgs: [customerId]);
+    if (c.isEmpty) throw Exception('Not found');
+
+    if (opening) {
+      // Two opening balances means the customer owes their old debt twice,
+      // which is exactly the mistake a second tap on Save would make.
+      final had = await tx.query('ledger',
+          where: "customer_id = ? AND type = 'opening'", whereArgs: [customerId]);
+      if (had.isNotEmpty) {
+        throw Exception('This customer already has an opening balance');
+      }
+    }
+
+    await tx.insert('ledger', {
+      'id': id,
+      'customer_id': customerId,
+      'type': opening ? 'opening' : 'adjustment',
+      'amount': amount,
+      'ref_id': null,
+      'note': note.trim(),
+      'created_at':
+          opening ? (c.first['created_at'] as num).toInt() : _now(),
+    });
+  });
+  return id;
+}
+
 /// Undoes a payment that was entered wrong — the wrong amount, or the wrong
 /// customer.
 ///
@@ -400,12 +441,11 @@ Future<String> undoPayment(String ledgerId) async {
       }
     }
 
-    // A cheque ticked off as banked by mistake goes back to waiting, where it
-    // can be banked or marked returned properly.
+    // Pulling a cheque's credit back off the account is the same event as the
+    // bank sending it back, so the cheque has to say so too.
     await tx.rawUpdate(
-        "UPDATE cheques SET status = 'pending', ledger_id = NULL, settled_at = NULL "
-        'WHERE ledger_id = ?',
-        [ledgerId]);
+        "UPDATE cheques SET status = 'bounced', settled_at = ? WHERE ledger_id = ?",
+        [_now(), ledgerId]);
 
     await tx.insert('ledger', {
       'id': id,
@@ -422,11 +462,14 @@ Future<String> undoPayment(String ledgerId) async {
 
 // ============================================================ cheques
 
-/// Records a cheque handed over as payment.
+/// Records a cheque handed over as payment, and credits the account there and
+/// then.
 ///
-/// Nothing goes to the ledger: until the bank pays, the customer still owes the
-/// money, and the balance has to keep saying so. That single decision is what
-/// makes [bounceCheque] free — there is nothing to unwind.
+/// Taking a cheque is how these customers settle up, so the balance has to drop
+/// the moment it changes hands — waiting on the bank would leave the counter
+/// looking at a figure nobody agrees with. The cheque row keeps its own status
+/// alongside, so the one case that does need unwinding — it comes back unpaid —
+/// is still a single tap away in [bounceCheque].
 Future<String> saveCheque({
   required String customerId,
   required String chequeNo,
@@ -438,8 +481,9 @@ Future<String> saveCheque({
   if (amount <= 0) throw Exception('Payment must be more than zero');
   if (chequeNo.trim().isEmpty) throw Exception('Cheque number is required');
 
-  final id = uid();
+  final id = uid(), ledgerId = uid();
   await db.transaction((tx) async {
+    final now = _now();
     await tx.insert('cheques', {
       'id': id,
       'no': await _nextNo(tx, 'cheques'),
@@ -449,58 +493,69 @@ Future<String> saveCheque({
       'amount': amount,
       'due_at': dueAt,
       'status': 'pending',
+      'ledger_id': ledgerId,
       'note': note.trim(),
-      'created_at': _now(),
+      'created_at': now,
+    });
+    await tx.insert('ledger', {
+      'id': ledgerId,
+      'no': await _nextNo(tx, 'ledger', "type = 'payment'"),
+      'customer_id': customerId,
+      'type': 'payment',
+      'amount': -amount,
+      'ref_id': id,
+      'note': 'Cheque ${chequeNo.trim()}',
+      'created_at': now,
     });
   });
   return id;
 }
 
-/// The bank paid. Only now does the money reach the ledger, where it settles
-/// the oldest unpaid bill like any other payment.
+/// The bank paid, as expected. The money was credited when the cheque came in,
+/// so this only records that it is now beyond doubt.
 ///
-/// The status guard is what makes a double tap harmless: the second attempt
-/// updates no rows and the whole transaction rolls back, so a cheque can never
-/// be credited twice.
-Future<String> clearCheque(String id) async {
-  final ledgerId = uid();
-  await db.transaction((tx) async {
-    final rows = await tx.rawQuery('''
-        SELECT h.*, c.name customer_name, c.phone customer_phone
-        FROM cheques h JOIN customers c ON c.id = h.customer_id
-        WHERE h.id = ?''', [id]);
-    if (rows.isEmpty) throw Exception('Cheque not found');
-    final ch = Cheque.fromRow(rows.first);
-
-    final now = _now();
-    final ok = await tx.rawUpdate(
-        "UPDATE cheques SET status = 'cleared', ledger_id = ?, settled_at = ? "
-        "WHERE id = ? AND status <> 'cleared'",
-        [ledgerId, now, id]);
-    if (ok != 1) throw Exception('This cheque is already banked');
-
-    await tx.insert('ledger', {
-      'id': ledgerId,
-      'no': await _nextNo(tx, 'ledger', "type = 'payment'"),
-      'customer_id': ch.customerId,
-      'type': 'payment',
-      'amount': -ch.amount,
-      'ref_id': id,
-      'note': 'Cheque ${ch.chequeNo}',
-      'created_at': now,
-    });
-  });
-  return ledgerId;
+/// The status guard makes a double tap harmless: the second attempt updates no
+/// rows and is refused.
+Future<void> clearCheque(String id) async {
+  final ok = await db.rawUpdate(
+      "UPDATE cheques SET status = 'cleared', settled_at = ? "
+      "WHERE id = ? AND status = 'pending'",
+      [_now(), id]);
+  if (ok != 1) throw Exception('This cheque is already settled');
 }
 
-/// The bank sent it back. Nothing is reversed, because a waiting cheque never
-/// touched the ledger — the customer simply still owes what they always owed.
-/// A returned cheque can still be cleared later if it is presented again.
+/// The bank sent it back, so the credit it was given has to come off again.
+///
+/// The reversal is a new ledger row rather than a deletion: both the credit and
+/// its withdrawal stay on the account, and because settlement is derived, every
+/// bill the cheque had cleared re-opens on its own.
 Future<void> bounceCheque(String id) async {
-  final ok = await db.rawUpdate(
-      "UPDATE cheques SET status = 'bounced', settled_at = ? WHERE id = ? AND status = 'pending'",
-      [_now(), id]);
-  if (ok != 1) throw Exception('Only a waiting cheque can be marked returned');
+  await db.transaction((tx) async {
+    final rows = await tx.query('cheques', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) throw Exception('Cheque not found');
+    final ch = Cheque.fromRow(rows.first);
+    if (ch.isBounced) throw Exception('This cheque is already marked returned');
+
+    // Cheques taken before this app credited the account are the one kind with
+    // nothing to reverse; anything else gets its credit pulled back.
+    if (ch.ledgerId != null) {
+      final already = await tx.query('ledger',
+          where: "type = 'payment_cancelled' AND ref_id = ?", whereArgs: [ch.ledgerId]);
+      if (already.isEmpty) {
+        await tx.insert('ledger', {
+          'id': uid(),
+          'customer_id': ch.customerId,
+          'type': 'payment_cancelled',
+          'amount': ch.amount, // the credit was negative, so this puts it back
+          'ref_id': ch.ledgerId,
+          'note': 'Cheque ${ch.chequeNo} returned unpaid',
+          'created_at': _now(),
+        });
+      }
+    }
+    await tx.update('cheques', {'status': 'bounced', 'settled_at': _now()},
+        where: 'id = ?', whereArgs: [id]);
+  });
 }
 
 /// Waiting cheques first, the nearest banking date at the top — that is the
@@ -564,18 +619,29 @@ Future<Cheque?> oneCheque(String id) async {
 ///
 /// Credits are payments and returns, netted against undone payments: a reversal
 /// is positive, so it cancels its payment inside the same sum and the bill it
-/// had cleared goes back to unpaid on its own.
+/// had cleared goes back to unpaid on its own. A hand-written adjustment that
+/// lets the customer off counts as a credit for the same reason.
+///
+/// Debts owed before this bill queue in front of it: earlier sales, and any
+/// balance carried in or added by hand up to that point. Without that, money
+/// paid against an opening balance would quietly tick off a sale it never
+/// touched.
 const _settled = '''
     CASE WHEN d.kind = 'sale' AND d.status <> 'cancelled' THEN
       MAX(0, MIN(d.total,
         IFNULL((SELECT -SUM(l.amount) FROM ledger l
                  WHERE l.customer_id = d.customer_id
-                   AND l.type IN ('payment', 'return', 'payment_cancelled')), 0)
+                   AND (l.type IN ('payment', 'return', 'payment_cancelled')
+                        OR (l.type IN ('opening', 'adjustment') AND l.amount < 0))), 0)
         - IFNULL((SELECT SUM(e.total) FROM docs e
                    WHERE e.customer_id = d.customer_id AND e.kind = 'sale'
                      AND e.status <> 'cancelled'
                      AND (e.created_at < d.created_at
-                          OR (e.created_at = d.created_at AND e.rowid < d.rowid))), 0)))
+                          OR (e.created_at = d.created_at AND e.rowid < d.rowid))), 0)
+        - IFNULL((SELECT SUM(l.amount) FROM ledger l
+                   WHERE l.customer_id = d.customer_id AND l.amount > 0
+                     AND l.type IN ('opening', 'adjustment')
+                     AND l.created_at <= d.created_at), 0)))
     ELSE 0 END settled''';
 
 Future<List<Doc>> docs({
@@ -930,6 +996,29 @@ final settings = <String, String>{};
 
 String get businessName => settings['business_name'] ?? '';
 String get businessPhone => settings['business_phone'] ?? '';
+
+/// The shop's logo, printed at the top of every receipt. Kept base64 in
+/// `settings` so it rides along in the backup like everything else, and decoded
+/// once — receipts ask for it on every render.
+String? _logoText;
+Uint8List? _logoBytes;
+
+Uint8List? get businessLogo {
+  final raw = settings['business_logo'];
+  if (raw == null || raw.isEmpty) return null;
+  if (raw != _logoText) {
+    _logoText = raw;
+    try {
+      _logoBytes = base64Decode(raw);
+    } catch (_) {
+      _logoBytes = null; // a damaged logo must not stop a receipt printing
+    }
+  }
+  return _logoBytes;
+}
+
+Future<void> setBusinessLogo(Uint8List? bytes) =>
+    setSetting('business_logo', bytes == null ? '' : base64Encode(bytes));
 
 /// Photo cards by default — a picture is the fastest way to spot a product.
 bool get productsAsCards => (settings['product_view'] ?? 'cards') == 'cards';

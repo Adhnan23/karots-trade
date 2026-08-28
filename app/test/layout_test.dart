@@ -69,7 +69,8 @@ void main() {
         });
 
         expect(tester_(t), isEmpty, reason: 'nothing overflowed');
-        expect(find.text('Rs. 19,000'), findsOneWidget, reason: 'owed total');
+        expect(find.text('Rs. 14,000'), findsOneWidget,
+            reason: 'owed total, with both cheques already credited');
         expect(find.byType(HomeScreen), findsOneWidget);
       });
 
@@ -89,6 +90,23 @@ void main() {
         // The waiting cheque and its two actions are all reachable.
         expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
         expect(find.byIcon(Icons.undo), findsWidgets);
+      });
+
+      testWidgets('adjust balance fits ${size.width.toInt()}px in $lang',
+          (t) async {
+        await t.binding.setSurfaceSize(size);
+        late Customer c;
+        await t.runAsync(() async {
+          c = (await s.customer(await shop()))!;
+          locale.value = lang;
+          await t.pumpWidget(
+              MaterialApp(theme: appTheme(), home: AdjustScreen(c)));
+          await settle(t);
+        });
+
+        expect(tester_(t), isEmpty, reason: 'nothing overflowed');
+        expect(find.byType(SegmentedButton<bool>), findsOneWidget,
+            reason: 'owes more / owes less');
       });
 
       testWidgets('history fits ${size.width.toInt()}px in $lang', (t) async {

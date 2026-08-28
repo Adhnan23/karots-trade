@@ -126,7 +126,7 @@ void main() {
     expectClearOfNavBar(t);
   });
 
-  testWidgets('Customer page: Delete stays above the navigation bar',
+  testWidgets('Customer page: the bottom of the account clears the bar',
       (t) async {
     late String cid;
     await t.runAsync(() async {
@@ -135,6 +135,39 @@ void main() {
     });
     await t.drag(find.byType(ListView), const Offset(0, -2000));
     await t.pump(const Duration(milliseconds: 20));
+    expectClearOfNavBar(t);
+  });
+
+  testWidgets('Customer page: Edit and Delete are a tap away, not a scroll',
+      (t) async {
+    late String cid;
+    await t.runAsync(() async {
+      cid = await shop();
+      // Enough history that anything below the list would be out of reach.
+      for (var i = 0; i < 40; i++) {
+        await s.recordPayment(cid, rs(1));
+      }
+      await withNavBar(t, CustomerScreen(cid));
+    });
+
+    expect(find.text('Delete'), findsNothing, reason: 'not under the history');
+
+    await t.tap(find.byIcon(Icons.more_vert));
+    await t.pumpAndSettle();
+
+    // Statement also has its own button on the page, so it shows up twice.
+    for (final label in ['Statement', 'Adjust balance', 'Edit', 'Delete']) {
+      expect(find.text(label), findsWidgets, reason: '$label is in the menu');
+    }
+    expectClearOfNavBar(t);
+  });
+
+  testWidgets('Adjust balance: Save stays above the navigation bar', (t) async {
+    late Customer c;
+    await t.runAsync(() async {
+      c = (await s.customer(await shop()))!;
+      await withNavBar(t, AdjustScreen(c));
+    });
     expectClearOfNavBar(t);
   });
 

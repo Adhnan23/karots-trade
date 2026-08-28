@@ -20,7 +20,7 @@ Future<Database> openDb({String? path}) async {
   _db = await databaseFactory.openDatabase(
     file,
     options: OpenDatabaseOptions(
-      version: 4,
+      version: 5,
       onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
       onCreate: (d, _) async {
         for (final s in schema) {
@@ -183,9 +183,9 @@ const schema = [
   'CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
 ];
 
-/// A cheque is a promise of money, not money. It deliberately lives outside
-/// `ledger`, so a customer's balance never counts what the bank has not paid;
-/// clearing it writes the ledger row, and bouncing it writes nothing at all.
+/// A cheque credits the account the moment it is handed over — that is what
+/// the counter actually expects — and `ledger_id` is the payment row it wrote.
+/// Coming back unpaid is the unusual case, and it writes a reversal.
 const _cheques = [
   '''CREATE TABLE cheques(
       id TEXT PRIMARY KEY,
@@ -229,5 +229,18 @@ const migrations = <int, List<String>>{
   4: [
     ..._cheques,
     'ALTER TABLE doc_items ADD COLUMN list_price INTEGER NOT NULL DEFAULT 0',
+  ],
+  // A cheque now comes off the balance as soon as it is taken in, so every
+  // cheque still waiting needs the payment row it would have written today.
+  // Additive: it inserts rows, and touches nothing that was already there.
+  5: [
+    '''INSERT INTO ledger(id, no, customer_id, type, amount, ref_id, note, created_at)
+       SELECT 'chq' || h.id,
+              (SELECT IFNULL(MAX(no),0) FROM ledger WHERE type = 'payment')
+                + ROW_NUMBER() OVER (ORDER BY h.created_at, h.rowid),
+              h.customer_id, 'payment', -h.amount, h.id,
+              'Cheque ' || h.cheque_no, h.created_at
+       FROM cheques h WHERE h.status = 'pending' ''',
+    "UPDATE cheques SET ledger_id = 'chq' || id WHERE status = 'pending'",
   ],
 };

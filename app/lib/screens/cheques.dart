@@ -6,7 +6,8 @@ import '../models.dart';
 import '../store.dart' as s;
 import 'history.dart' show Filters;
 
-/// Colours a cheque by where it stands: waiting, paid, or sent back.
+/// Colours a cheque by where it stands: credited and waiting on its date,
+/// ready to bank, confirmed, or sent back.
 ({Color color, IconData icon, String label}) chequeLook(Cheque c) => switch (c) {
       _ when c.isCleared => (color: C.buy, icon: Icons.check_circle, label: 'Banked'),
       _ when c.isBounced =>
@@ -27,19 +28,22 @@ class ChequeCard extends StatelessWidget {
   Future<void> _bank(BuildContext context) async {
     if (!await ask(
         context,
-        '${t('Mark as banked?')} ${t('The balance goes down now.')}',
+        '${t('Mark as banked?')} ${t('The balance already came down when you took it.')}',
         t('Mark banked'))) {
       return;
     }
     if (!context.mounted) return;
-    final id = await guard(context, () => s.clearCheque(cheque.id));
-    if (id == null || !context.mounted) return;
+    final ok =
+        await guard(context, () => s.clearCheque(cheque.id).then((_) => true));
+    if (ok != true || !context.mounted) return;
     toast(context, t('Cheque banked'));
     onChanged();
   }
 
   Future<void> _bounce(BuildContext context) async {
-    if (!await ask(context, t('Mark this cheque as returned unpaid?'),
+    if (!await ask(
+        context,
+        '${t('Mark this cheque as returned unpaid?')} ${t('The amount goes back on their account.')}',
         t('Mark returned'))) {
       return;
     }
@@ -75,6 +79,8 @@ class ChequeCard extends StatelessWidget {
                     [
                       if (cheque.bank.isNotEmpty) cheque.bank,
                       '${t('Due')} ${onDayMs(cheque.dueAt)}',
+                      if (cheque.isPending && cheque.daysLeft > 0)
+                        '${cheque.daysLeft} ${t(cheque.daysLeft == 1 ? 'day left' : 'days left')}',
                     ].join('  •  '),
                     style: const TextStyle(fontSize: 13, color: Colors.black54)),
               ]),
@@ -106,7 +112,10 @@ class ChequeCard extends StatelessWidget {
               onPressed: () => showChequeReceipt(context, cheque.id),
             ),
           ]),
-          if (!cheque.isCleared)
+          // Only a cheque still in play has anything left to decide. Once it is
+          // banked or returned, its money has already moved and re-deciding
+          // would move it twice.
+          if (cheque.isPending)
             Row(children: [
               Expanded(
                 child: TextButton.icon(
@@ -116,15 +125,14 @@ class ChequeCard extends StatelessWidget {
                   onPressed: () => _bank(context),
                 ),
               ),
-              if (cheque.isPending)
-                Expanded(
-                  child: TextButton.icon(
-                    style: TextButton.styleFrom(foregroundColor: C.owe),
-                    icon: const Icon(Icons.undo),
-                    label: Fit(t('Mark returned')),
-                    onPressed: () => _bounce(context),
-                  ),
+              Expanded(
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(foregroundColor: C.owe),
+                  icon: const Icon(Icons.undo),
+                  label: Fit(t('Mark returned')),
+                  onPressed: () => _bounce(context),
                 ),
+              ),
             ]),
         ]),
       ),
@@ -154,15 +162,24 @@ Future<void> showChequeReceipt(BuildContext context, String chequeId) async {
       ].join('  ·  '),
       totals: [
         ('Cheque amount', c.amount),
-        (owing > 0 ? 'Account balance' : 'Account settled', owing.abs()),
+        (
+          // A cheque that covers more than was owed leaves an advance, which
+          // happens often enough now that it credits on arrival.
+          owing > 0
+              ? 'Account balance'
+              : owing < 0
+                  ? 'Advance held'
+                  : 'Account settled',
+          owing.abs()
+        ),
       ],
       footnote: switch (c) {
         _ when c.isCleared =>
           'Banked on ${onDayMs(c.settledAt ?? c.createdAt)}. The account has been credited.',
         _ when c.isBounced =>
-          'This cheque was returned unpaid. The amount is still owing.',
+          'This cheque was returned unpaid, so the amount has gone back onto the account.',
         _ =>
-          'Received as a cheque. The account is credited only once the bank pays it.',
+          'The account has been credited. Bankable from ${onDayMs(c.dueAt)}; if it is returned unpaid the amount goes back on.',
       },
     ),
   );
@@ -272,7 +289,7 @@ class _WaitingBanner extends StatelessWidget {
               style: const TextStyle(fontSize: 14, color: Colors.black54)),
           const SizedBox(height: 2),
           Money(amount, size: 22, color: C.quote),
-          Text(t('Not counted in the balance until the bank pays.'),
+          Text(t('Already taken off customer balances.'),
               style: const TextStyle(fontSize: 13, color: Colors.black54)),
         ]),
       );
