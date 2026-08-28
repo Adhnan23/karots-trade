@@ -161,7 +161,7 @@ Future<Uint8List> buildReceipt(Receipt r, {bool compress = true}) async {
 
       if (r.statement.isNotEmpty)
         pw.TableHelper.fromTextArray(
-          headers: ['Date', 'Detail', 'Amount', 'Balance'],
+          headers: const ['Date', 'Detail', 'Amount', 'Balance'],
           headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
           headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF3F4F6)),
           cellStyle: const pw.TextStyle(fontSize: 8.5),

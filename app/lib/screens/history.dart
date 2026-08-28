@@ -337,49 +337,24 @@ class DocScreen extends StatefulWidget {
 }
 
 class _DocScreenState extends State<DocScreen> {
-  late Future<(Doc?, List<DocItem>)> _data = _load();
+  late Future<(Doc?, List<DocItem>, int)> _data = _load();
 
-  Future<(Doc?, List<DocItem>)> _load() async =>
-      (await s.doc(widget.id), await s.docItems(widget.id));
+  /// The customer's whole balance comes along, so a bill can tell them what
+  /// they owe altogether and not just for this one sale.
+  Future<(Doc?, List<DocItem>, int)> _load() async {
+    final d = await s.doc(widget.id);
+    return (
+      d,
+      await s.docItems(widget.id),
+      d == null ? 0 : await s.balance(d.customerId),
+    );
+  }
 
   void _reload() {
     if (!mounted) return;
     setState(() {
       _data = _load();
     });
-  }
-
-  /// Receipts print in English, so this text is deliberately not translated.
-  static String _line(DocItem i) => i.discount == 0
-      ? i.name
-      : '${i.name}\nWas ${money(i.listPrice)} each  -  saved ${money(i.discount)}';
-
-  Receipt _receipt(Doc d, List<DocItem> items) {
-    final saved = items.fold(0, (a, i) => a + i.discount);
-    return Receipt(
-      kind: d.isQuote ? 'Quotation' : 'Sale',
-      no: d.no,
-      date: d.createdAt,
-      customer: d.customerName,
-      customerPhone: d.customerPhone,
-      reference: d.fromQuote == null ? null : 'Converted from a quotation',
-      lines: [for (final i in items) (_line(i), i.qty, i.price)],
-      totals: [
-        ('Total', d.total),
-        if (saved > 0) ('You saved', saved),
-        if (!d.isQuote) ('Paid', d.settled),
-        if (!d.isQuote) (d.due > 0 ? 'Balance due' : 'Settled', d.due),
-      ],
-      footnote: switch (d) {
-        _ when d.isCancelled => 'This sale was cancelled.',
-        _ when d.isQuote => 'Prices held while stock lasts. This is not a bill.',
-        // A due date beats "within a week": it is the thing to point at later.
-        _ when d.due > 0 =>
-          'Please settle ${money(d.due)} by ${onDay(payBy(d.createdAt))} '
-              '(within $creditDays days).',
-        _ => null,
-      },
-    );
   }
 
   Future<void> _convert(Doc d) async {
@@ -402,7 +377,7 @@ class _DocScreenState extends State<DocScreen> {
           if (!snap.hasData) {
             return const Scaffold(body: Center(child: CircularProgressIndicator()));
           }
-          final (d, items) = snap.data!;
+          final (d, items, owing) = snap.data!;
           if (d == null) {
             return Scaffold(appBar: AppBar(), body: Center(child: Text(t('Not found'))));
           }
@@ -423,7 +398,7 @@ class _DocScreenState extends State<DocScreen> {
                 IconButton(
                   icon: const Icon(Icons.receipt_long),
                   tooltip: t('Receipt'),
-                  onPressed: () => showReceipt(context, _receipt(d, items)),
+                  onPressed: () => showReceipt(context, saleReceipt(d, items, owing)),
                 ),
               ],
             ),
@@ -484,7 +459,7 @@ class _DocScreenState extends State<DocScreen> {
                 style: FilledButton.styleFrom(backgroundColor: color),
                 icon: const Icon(Icons.receipt_long),
                 label: Text(t('Receipt')),
-                onPressed: () => showReceipt(context, _receipt(d, items)),
+                onPressed: () => showReceipt(context, saleReceipt(d, items, owing)),
               ),
               if (d.isQuote && d.status == 'pending') ...[
                 const SizedBox(height: 10),
@@ -795,4 +770,49 @@ class _ReturnsListState extends State<ReturnsList> {
           );
         },
       );
+}
+
+/// The bill or quotation itself. Top level so the figures on it — what this
+/// sale came to, and what the customer owes altogether — can be checked
+/// without driving a screen.
+///
+/// Receipts print in English, so this text is deliberately not translated.
+String _line(DocItem i) => i.discount == 0
+    ? i.name
+    : '${i.name}\nWas ${money(i.listPrice)} each  -  saved ${money(i.discount)}';
+
+Receipt saleReceipt(Doc d, List<DocItem> items, int owing) {
+  final saved = items.fold(0, (a, i) => a + i.discount);
+  // What the customer owes on everything except this bill. A quotation is
+  // not a bill, and a cancelled sale is not owed, so neither carries it.
+  final earlier =
+      d.isQuote || d.isCancelled ? 0 : (owing - d.due < 0 ? 0 : owing - d.due);
+  return Receipt(
+    kind: d.isQuote ? 'Quotation' : 'Sale',
+    no: d.no,
+    date: d.createdAt,
+    customer: d.customerName,
+    customerPhone: d.customerPhone,
+    reference: d.fromQuote == null ? null : 'Converted from a quotation',
+    lines: [for (final i in items) (_line(i), i.qty, i.price)],
+    totals: [
+      ('Total', d.total),
+      if (saved > 0) ('You saved', saved),
+      if (!d.isQuote) ('Paid', d.settled),
+      if (!d.isQuote) (d.due > 0 ? 'Balance due' : 'Settled', d.due),
+      // Old debt belongs on the new bill: the customer is being asked for
+      // one figure at the counter, not two.
+      if (earlier > 0) ('Earlier dues', earlier),
+      if (earlier > 0) ('Total to pay', owing),
+    ],
+    footnote: switch (d) {
+      _ when d.isCancelled => 'This sale was cancelled.',
+      _ when d.isQuote => 'Prices held while stock lasts. This is not a bill.',
+      // A due date beats "within a week": it is the thing to point at later.
+      _ when d.due > 0 =>
+        'Please settle ${money(d.due)} by ${onDay(payBy(d.createdAt))} '
+            '(within $creditDays days).',
+      _ => null,
+    },
+  );
 }

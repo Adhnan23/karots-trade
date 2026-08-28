@@ -24,14 +24,6 @@ final dayFmt = DateFormat('d MMM yyyy');
 String onDay(DateTime d) => dayFmt.format(d);
 String onDayMs(int ms) => onDay(DateTime.fromMillisecondsSinceEpoch(ms));
 
-/// How long a customer has to settle a bill taken on credit. Printed on the
-/// receipt as a real date, because "within a week" starts an argument and
-/// "by 3 Sep 2026" does not.
-const creditDays = 7;
-
-DateTime payBy(int soldAt) =>
-    DateTime.fromMillisecondsSinceEpoch(soldAt).add(const Duration(days: creditDays));
-
 // ---------------------------------------------------------------- identity
 
 const appName = 'Karots Trade';
@@ -339,6 +331,9 @@ const _ta = <String, String>{
       'இந்த வாடிக்கையாளருக்கு பரிவர்த்தனைகள் உள்ளன, நீக்க முடியாது',
   // Statements, adjustments and the balance carried in from before
   'Statement': 'கணக்கு அறிக்கை',
+  'Full statement': 'முழு அறிக்கை',
+  'Outstanding': 'நிலுவைப் பட்டியல்',
+  'What they owe': 'தர வேண்டியது',
   'Adjust balance': 'நிலுவை திருத்தம்',
   'Adjustment': 'திருத்தம்',
   'Balance before this app': 'முந்தைய நிலுவை',

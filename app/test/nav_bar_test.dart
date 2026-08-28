@@ -155,9 +155,10 @@ void main() {
     await t.tap(find.byIcon(Icons.more_vert));
     await t.pumpAndSettle();
 
-    // Statement also has its own button on the page, so it shows up twice.
-    for (final label in ['Statement', 'Adjust balance', 'Edit', 'Delete']) {
-      expect(find.text(label), findsWidgets, reason: '$label is in the menu');
+    for (final label in [
+      'Outstanding', 'Full statement', 'Adjust balance', 'Edit', 'Delete'
+    ]) {
+      expect(find.text(label), findsOneWidget, reason: '$label is in the menu');
     }
     expectClearOfNavBar(t);
   });

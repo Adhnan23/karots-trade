@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:karots_trade/db.dart';
 import 'package:karots_trade/files.dart';
 import 'package:karots_trade/models.dart';
+import 'package:karots_trade/screens/customers.dart';
 import 'package:karots_trade/store.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
 
@@ -702,6 +703,241 @@ void main() {
       await adjustBalance(cid, rs(2000), opening: true);
       expect(() => deleteCustomer(cid), throwsA(isA<Exception>()));
       expect(await balance(cid), rs(2000));
+    });
+  });
+
+  group('what a customer still has to pay', () {
+    late String pid, bid, cid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 100);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    Future<String> sell({int qty = 10}) => saveDoc(customerId: cid, quote: false, lines: [
+          SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty)
+        ]);
+
+    /// Moves a sale and its ledger entry back in time, which is the only way
+    /// to get a bill old enough to be overdue.
+    Future<void> backdate(String docId, int days) async {
+      final at = DateTime.now()
+          .subtract(Duration(days: days))
+          .millisecondsSinceEpoch;
+      await db.update('docs', {'created_at': at},
+          where: 'id = ?', whereArgs: [docId]);
+      await db.update('ledger', {'created_at': at},
+          where: 'ref_id = ?', whereArgs: [docId]);
+    }
+
+    test('settled bills drop off, unfinished ones stay, oldest first',
+        () async {
+      final one = await sell(); // Rs. 700
+      final two = await sell();
+      final three = await sell();
+
+      await recordPayment(cid, rs(700)); // clears the first exactly
+
+      final open = await outstanding(cid);
+      expect(open.bills.map((d) => d.id), [two, three],
+          reason: 'the paid-off bill is not what they want to see');
+      expect(open.total, rs(1400));
+      expect(one, isNotNull);
+    });
+
+    test('a part-paid bill stays, showing only what is left of it', () async {
+      final one = await sell();
+      await sell();
+      await recordPayment(cid, rs(300));
+
+      final open = await outstanding(cid);
+      expect(open.bills.first.id, one);
+      expect(open.bills.first.due, rs(400), reason: 'Rs. 700 less Rs. 300');
+      expect(open.bills.fold(0, (a, d) => a + d.due), rs(1100));
+      expect(open.total, rs(1100));
+    });
+
+    test('nothing is outstanding once the account is clear', () async {
+      await sell();
+      await recordPayment(cid, rs(700));
+
+      final open = await outstanding(cid);
+      expect(open.bills, isEmpty);
+      expect(open.total, 0);
+      expect(open.overdue, 0);
+    });
+
+    test('an advance leaves nothing outstanding and no negative bills',
+        () async {
+      await sell();
+      await recordPayment(cid, rs(1000));
+
+      final open = await outstanding(cid);
+      expect(open.bills, isEmpty);
+      expect(open.total, -rs(300), reason: 'they are ahead by Rs. 300');
+    });
+
+    test('a bill past its credit days counts as overdue', () async {
+      final old = await sell();
+      await sell();
+      await backdate(old, creditDays + 3);
+
+      final open = await outstanding(cid);
+      expect(open.overdue, rs(700), reason: 'only the old one');
+      expect(open.total, rs(1400));
+    });
+
+    test('a cheque not yet at the bank is already off the total', () async {
+      await sell();
+      await saveCheque(
+          customerId: cid,
+          chequeNo: '400123',
+          amount: rs(200),
+          dueAt: DateTime.now().add(const Duration(days: 10)).millisecondsSinceEpoch);
+
+      final open = await outstanding(cid);
+      expect(open.total, rs(500), reason: 'the cheque came off when it arrived');
+      expect(open.bills.single.due, rs(500));
+      expect((await cheques(customerId: cid, status: 'pending')).single.daysLeft,
+          greaterThan(0), reason: 'and the report can say how long it has left');
+    });
+
+    test('debt carried in is the part no bill accounts for', () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+      await sell(); // Rs. 700
+      await recordPayment(cid, rs(500));
+
+      final open = await outstanding(cid);
+      // Rs. 500 went against the old debt, so the bill is untouched and the
+      // remainder — what the report calls brought forward — is Rs. 1,500.
+      expect(open.bills.single.due, rs(700));
+      expect(open.total, rs(2200));
+      expect(open.total - open.bills.fold(0, (a, d) => a + d.due), rs(1500));
+    });
+  });
+
+  group('the outstanding report adds up', () {
+    late String pid, bid, cid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 200);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop', phone: '0712345678');
+    });
+
+    Future<String> sell({int qty = 10}) => saveDoc(customerId: cid, quote: false, lines: [
+          SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty)
+        ]);
+
+    /// The report as the customer would receive it.
+    Future<Receipt> report() async => outstandingReceipt(
+          (await customer(cid))!,
+          await outstanding(cid),
+          await ledger(cid),
+          await docs(customerId: cid),
+          await cheques(customerId: cid, status: 'pending'),
+        );
+
+    /// Brought forward, plus every line on the report, must land exactly on
+    /// the balance the rest of the app shows. That is the whole point.
+    void expectAddsUp(Receipt r, int balance) {
+      final sum = r.statement.fold(0, (a, row) => a + row.$3);
+      expect(sum, balance, reason: 'the lines add up to the balance');
+      if (r.statement.isNotEmpty) {
+        expect(r.statement.last.$4, balance,
+            reason: 'and the last running balance is that same figure');
+      }
+    }
+
+    test('a bill already paid off is left out entirely', () async {
+      await sell(); // Rs. 700, paid off below
+      await recordPayment(cid, rs(700));
+      await sell(qty: 4); // Rs. 280, still owed
+
+      final r = await report();
+      final details = r.statement.map((row) => row.$2).toList();
+
+      expect(details.where((d) => d.startsWith('Sale #1')), isEmpty,
+          reason: 'the bill they already paid is not listed');
+      expect(details.any((d) => d.startsWith('Sale #2  ·  due ')), isTrue,
+          reason: 'the open bill, with the date it was due by');
+      expect(details, isNot(contains('Balance brought forward')),
+          reason: 'nothing was carried in, so no line saying zero');
+      expectAddsUp(r, rs(280));
+    });
+
+    test('payments landing between open bills are on the report', () async {
+      await sell(); // Rs. 700
+      await recordPayment(cid, rs(200), note: 'Part payment');
+      await sell(qty: 4); // Rs. 280
+
+      final r = await report();
+      final details = r.statement.map((row) => row.$2).toList();
+
+      expect(details, contains('Part payment'), reason: 'the money in between');
+      expect(details.where((d) => d.startsWith('Sale #')), hasLength(2));
+      expectAddsUp(r, rs(780));
+    });
+
+    test('a cheque still waiting is listed, subtracted, and explained',
+        () async {
+      await sell(); // Rs. 700
+      await saveCheque(
+          customerId: cid,
+          chequeNo: '400123',
+          bank: 'Sampath',
+          amount: rs(200),
+          dueAt: DateTime.now().add(const Duration(days: 5)).millisecondsSinceEpoch);
+
+      final r = await report();
+      final cheque =
+          r.statement.firstWhere((row) => row.$2.contains('400123'));
+
+      expect(cheque.$3, -rs(200), reason: 'shown as a subtraction');
+      expect(r.notes.first, contains('already been taken off this total'));
+      expect(r.notes.first, contains('5 days from now'));
+      expect(r.totals.first, ('Total to pay', rs(500)));
+      expectAddsUp(r, rs(500));
+    });
+
+    test('a balance carried in from before the app opens the report',
+        () async {
+      await adjustBalance(cid, rs(2000), opening: true);
+      await sell(); // Rs. 700
+      await recordPayment(cid, rs(500));
+
+      final r = await report();
+      expect(r.statement.first.$2, 'Balance brought forward');
+      expect(r.statement.first.$3, rs(2000), reason: 'the old debt itself');
+      // The Rs. 500 landed after the bill, so it keeps its own line rather
+      // than being netted away — the customer can see the money they sent.
+      expect(r.statement.map((row) => row.$2), contains('Payment received'));
+      expectAddsUp(r, rs(2200));
+    });
+
+    test('a settled account says so and lists nothing', () async {
+      await sell();
+      await recordPayment(cid, rs(700));
+
+      final r = await report();
+      expect(r.statement, isEmpty);
+      expect(r.totals.first, ('Nothing outstanding', 0));
+      expect(r.notes, contains('This account is fully settled. Thank you.'));
+    });
+
+    test('an overdue bill is marked and totalled', () async {
+      final old = await sell();
+      final at = DateTime.now()
+          .subtract(Duration(days: creditDays + 3))
+          .millisecondsSinceEpoch;
+      await db.update('docs', {'created_at': at}, where: 'id = ?', whereArgs: [old]);
+      await db.update('ledger', {'created_at': at},
+          where: 'ref_id = ?', whereArgs: [old]);
+
+      final r = await report();
+      expect(r.statement.any((row) => row.$2.contains('(overdue)')), isTrue);
+      expect(r.totals, contains(('Of that, overdue', rs(700))));
     });
   });
 

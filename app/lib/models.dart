@@ -2,6 +2,15 @@ import 'dart:typed_data';
 
 typedef SqlRow = Map<String, Object?>;
 
+/// How long a customer has to settle a bill taken on credit. Printed on the
+/// receipt as a real date, because "within a week" starts an argument and
+/// "by 3 Sep 2026" does not. It lives here rather than with the widgets
+/// because it is a term of trade, and the store has to reason about it too.
+const creditDays = 7;
+
+DateTime payBy(int soldAt) =>
+    DateTime.fromMillisecondsSinceEpoch(soldAt).add(const Duration(days: creditDays));
+
 int _i(Object? v) => (v as num?)?.toInt() ?? 0;
 String _s(Object? v) => (v as String?) ?? '';
 

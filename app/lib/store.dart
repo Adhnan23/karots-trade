@@ -685,6 +685,30 @@ Future<List<Doc>> docs({
       .toList();
 }
 
+/// The bills a customer has not finished paying, oldest first, with what is
+/// still owed altogether and how much of it is past its date.
+///
+/// Money clears the oldest bill first, so once one bill is open every bill
+/// after it is open too — which is what lets a report start at the first of
+/// them and show everything since.
+Future<({List<Doc> bills, int overdue, int total})> outstanding(
+    String customerId) async {
+  final total = await balance(customerId);
+  final bills = (await docs(customerId: customerId, kind: 'sale'))
+      .where((d) => !d.isCancelled && d.due > 0)
+      .toList()
+      .reversed
+      .toList();
+  final now = DateTime.now();
+  return (
+    bills: bills,
+    overdue: bills
+        .where((d) => payBy(d.createdAt).isBefore(now))
+        .fold(0, (a, d) => a + d.due),
+    total: total,
+  );
+}
+
 Future<Doc?> doc(String id) async {
   final r = await db.rawQuery('''
       SELECT d.*, c.name customer_name, c.phone customer_phone, $_settled

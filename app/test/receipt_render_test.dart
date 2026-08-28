@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:karots_trade/core.dart';
 import 'package:karots_trade/db.dart';
 import 'package:karots_trade/files.dart';
+import 'package:karots_trade/models.dart';
+import 'package:karots_trade/screens/history.dart';
 import 'package:karots_trade/store.dart' as s;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
 
@@ -12,6 +14,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
 /// checks the contact line really is on all of them.
 /// PDF text is emitted one word per string literal, so pull the literals back
 /// out and re-join them to read the page as a person would.
+int rs(num v) => (v * 100).round();
+
 String pdfText(List<int> bytes) => RegExp(r'\((?:[^()\\]|\\.)*\)')
     .allMatches(latin1.decode(bytes, allowInvalid: true))
     .map((m) => m.group(0)!)
@@ -95,6 +99,30 @@ void main() {
       totals: [('Returned value', 36000), ('Credited to account', 36000)],
       footnote: 'Stock taken back and the customer account credited.',
     ),
+    'outstanding': const Receipt(
+      kind: 'Outstanding',
+      no: 0,
+      date: 1755930000000,
+      customer: 'ABC Shop',
+      customerPhone: '0712345678',
+      reference: 'Amounts still to be paid as on 23 Aug 2026',
+      statement: [
+        ('12 Jul 2026', 'Balance brought forward', 200000, 200000),
+        ('2 Aug 2026', 'Sale #9  ·  due 9 Aug 2026  (overdue)', 400000, 600000),
+        ('4 Aug 2026', 'Payment received', -100000, 500000),
+        ('9 Aug 2026', 'Cheque 400123', -40000, 460000),
+        ('20 Aug 2026', 'Sale #14  ·  due 27 Aug 2026', 180000, 640000),
+      ],
+      totals: [('Total to pay', 640000), ('Of that, overdue', 300000)],
+      notes: [
+        'Cheque 400123 (Sampath) for Rs. 400 is listed above and has already '
+            'been taken off this total. It can be banked on 30 Aug 2026, '
+            '7 days from now.',
+        'If a cheque is returned unpaid, its amount comes back onto this total.',
+      ],
+      footnote: 'Bills settled before the first line above are not listed. '
+          'Ask for a full statement to see every payment on the account.',
+    ),
     'statement': const Receipt(
       kind: 'Statement',
       no: 0,
@@ -152,6 +180,25 @@ void main() {
     // A statement is the account as it stands today, not a numbered document.
     expect(samples['statement']!.fileName, 'Statement-2025-08-23');
     expect(samples['statement']!.number, '');
+    expect(samples['outstanding']!.fileName, 'Outstanding-2025-08-23');
+  });
+
+  test('an outstanding report shows only open bills and the money in between',
+      () async {
+    final text =
+        pdfText(await buildReceipt(samples['outstanding']!, compress: false));
+
+    expect(text, contains('Balance brought forward'),
+        reason: 'everything settled before the first open bill, in one line');
+    expect(text, contains('Sale #9'), reason: 'an unfinished bill');
+    expect(text, contains('overdue'), reason: 'and that it is late');
+    expect(text, contains('Payment received'),
+        reason: 'the payments that landed in between');
+    expect(text, contains('Cheque 400123'),
+        reason: 'a cheque not yet at the bank is still on the document');
+    expect(text, contains('-Rs. 400'), reason: 'and shown subtracted');
+    expect(text, contains('Total to pay'));
+    expect(text, contains('Of that, overdue'));
   });
 
   test('a statement shows every entry, the running balance and the cheques',
@@ -188,6 +235,54 @@ void main() {
     expect(text, contains('dated 30 Aug 2026'), reason: 'when it can be banked');
     expect(text, contains('has been credited'),
         reason: 'the money comes off the balance the day the cheque arrives');
+  });
+
+  test('a new bill shows the old debt and one figure to pay', () async {
+    await s.savePurchase(
+        [BuyLine(name: 'Soap', cost: rs(50), price: rs(70), qty: 100)]);
+    final soap = (await s.products()).single;
+    final batch = (await s.batches(soap.id)).single;
+    final cid = await s.saveCustomer(name: 'ABC Shop', phone: '0712345678');
+
+    // An older bill left unpaid, then a new one written today.
+    await s.saveDoc(customerId: cid, quote: false, lines: [
+      SellLine(
+          productId: soap.id, batchId: batch.id, name: 'Soap',
+          price: rs(70), qty: 10)
+    ]);
+    final now = await s.saveDoc(customerId: cid, quote: false, lines: [
+      SellLine(
+          productId: soap.id, batchId: batch.id, name: 'Soap',
+          price: rs(70), qty: 4)
+    ]);
+
+    final d = (await s.doc(now))!;
+    final r = saleReceipt(d, await s.docItems(now), await s.balance(cid));
+    final text = pdfText(await buildReceipt(r, compress: false));
+
+    expect(text, contains('Earlier dues'), reason: 'the old bill is on this one');
+    expect(text, contains('Rs. 700'), reason: 'what was already owed');
+    expect(text, contains('Total to pay'));
+    expect(text, contains('Rs. 980'), reason: 'Rs. 700 owed plus this Rs. 280');
+  });
+
+  test('a bill for a customer who owes nothing else stays plain', () async {
+    await s.savePurchase(
+        [BuyLine(name: 'Soap', cost: rs(50), price: rs(70), qty: 100)]);
+    final soap = (await s.products()).single;
+    final batch = (await s.batches(soap.id)).single;
+    final cid = await s.saveCustomer(name: 'ABC Shop');
+    final only = await s.saveDoc(customerId: cid, quote: false, lines: [
+      SellLine(
+          productId: soap.id, batchId: batch.id, name: 'Soap',
+          price: rs(70), qty: 4)
+    ]);
+
+    final d = (await s.doc(only))!;
+    final r = saleReceipt(d, await s.docItems(only), await s.balance(cid));
+
+    expect(r.totals.map((t) => t.$1), isNot(contains('Earlier dues')),
+        reason: 'no old debt, no extra line to explain');
   });
 
   test('the settle-by date is exactly a week after the sale', () {

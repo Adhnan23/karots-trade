@@ -160,6 +160,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
   /// with a year of history had to be scrolled past to reach Delete.
   Future<void> _menu(String choice, Customer c) async {
     switch (choice) {
+      case 'outstanding':
+        await showOutstanding(context, c.id);
       case 'statement':
         await showStatement(context, c.id);
       case 'adjust':
@@ -199,7 +201,8 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   onSelected: (v) => _menu(v, c),
                   itemBuilder: (_) => [
                     for (final (value, icon, text) in const [
-                      ('statement', Icons.receipt_long, 'Statement'),
+                      ('outstanding', Icons.request_quote, 'Outstanding'),
+                      ('statement', Icons.receipt_long, 'Full statement'),
                       ('adjust', Icons.tune, 'Adjust balance'),
                       ('opening', Icons.history_edu, 'Balance before this app'),
                       ('edit', Icons.edit, 'Edit'),
@@ -290,9 +293,9 @@ class _CustomerScreenState extends State<CustomerScreen> {
                 style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(52),
                     foregroundColor: C.history),
-                icon: const Icon(Icons.receipt_long),
-                label: Fit(t('Statement')),
-                onPressed: () => showStatement(context, c.id),
+                icon: const Icon(Icons.request_quote),
+                label: Fit(t('What they owe')),
+                onPressed: () => showOutstanding(context, c.id),
               ),
               if (waiting.isNotEmpty) ...[
                 const SizedBox(height: 22),
@@ -346,6 +349,118 @@ class _CustomerScreenState extends State<CustomerScreen> {
 /// How much of the account is drawn on the customer page itself.
 const _historyShown = 50;
 
+/// What is still to be paid — the document that gets sent to a customer to
+/// chase money.
+///
+/// It starts at the oldest bill that is not finished with, and from there
+/// shows everything: the open bills, and every payment, return and cheque that
+/// has landed in between them. Bills settled long ago are left out, because a
+/// customer asking "what do I owe you" is not helped by a year of paid-off
+/// sales. Everything before the starting point is folded into one brought
+/// forward line, so the figures still add up to the balance exactly.
+Future<void> showOutstanding(BuildContext context, String customerId) async {
+  final c = await s.customer(customerId);
+  if (c == null || !context.mounted) return;
+  final r = outstandingReceipt(
+    c,
+    await s.outstanding(customerId),
+    await s.ledger(customerId),
+    await s.docs(customerId: customerId),
+    await s.cheques(customerId: customerId, status: 'pending'),
+  );
+  if (!context.mounted) return;
+  await showReceipt(context, r);
+}
+
+/// Builds the outstanding report. Top level and free of any screen, because
+/// this is the document a customer is handed to ask them for money and its
+/// figures have to be checkable on their own.
+Receipt outstandingReceipt(
+  Customer c,
+  ({List<Doc> bills, int overdue, int total}) open,
+  List<LedgerEntry> entries,
+  List<Doc> docs,
+  List<Cheque> waiting,
+) {
+  final now = DateTime.now();
+  final oldest = open.bills.isEmpty ? null : open.bills.first;
+  final byId = {for (final d in docs) d.id: d};
+  final stillOpen = {for (final d in open.bills) d.id};
+
+  // Oldest first, cut to start at the bill that is still owed for.
+  final chronological = entries.reversed.toList();
+  final from = oldest == null
+      ? chronological.length
+      : chronological.indexWhere((e) => e.type == 'sale' && e.refId == oldest.id);
+  final shown = from < 0 ? chronological : chronological.sublist(from);
+
+  // Everything before that point nets to a single figure. Taking it from the
+  // running balance rather than re-adding the entries is what guarantees the
+  // report ends on the same number as the account itself.
+  final broughtForward =
+      shown.isEmpty ? open.total : shown.first.balanceAfter - shown.first.amount;
+
+  String detail(LedgerEntry e) {
+    final base = entryDetail(e, byId);
+    if (e.type != 'sale' || !stillOpen.contains(e.refId)) return base;
+    final by = payBy(e.createdAt);
+    return '$base  ·  due ${onDay(by)}${by.isBefore(now) ? '  (overdue)' : ''}';
+  }
+
+  return Receipt(
+    kind: 'Outstanding',
+    no: 0,
+    date: now.millisecondsSinceEpoch,
+    customer: c.name,
+    customerPhone: c.phone,
+    reference: 'Amounts still to be paid as on ${onDay(now)}',
+    statement: [
+      if (broughtForward != 0)
+        (
+          onDayMs(shown.isEmpty ? c.createdAt : shown.first.createdAt),
+          'Balance brought forward',
+          broughtForward,
+          broughtForward
+        ),
+      for (final e in shown)
+        (onDayMs(e.createdAt), detail(e), e.amount, e.balanceAfter)
+    ],
+    totals: [
+      (open.total > 0 ? 'Total to pay' : 'Nothing outstanding', open.total.abs()),
+      if (open.overdue > 0) ('Of that, overdue', open.overdue),
+    ],
+    notes: [
+      for (final h in waiting)
+        'Cheque ${h.chequeNo}${h.bank.isEmpty ? '' : ' (${h.bank})'} for '
+            '${money(h.amount)} is listed above and has already been taken off '
+            'this total. '
+            '${h.daysLeft == 0 ? 'It can be banked now.' : 'It can be banked on ${onDayMs(h.dueAt)}, ${h.daysLeft} day${h.daysLeft == 1 ? '' : 's'} from now.'}',
+      if (waiting.isNotEmpty)
+        'If a cheque is returned unpaid, its amount comes back onto this total.',
+      if (open.total <= 0) 'This account is fully settled. Thank you.',
+    ],
+    footnote: 'Bills settled before the first line above are not listed. '
+        'Ask for a full statement to see every payment on the account.',
+  );
+}
+
+/// How one ledger entry reads on paper. English only, like every other
+/// receipt: the PDF has no Tamil font.
+String entryDetail(LedgerEntry e, Map<String, Doc> byId) {
+  final ref = byId[e.refId];
+  final tag = ref == null ? '' : ' #${ref.no}';
+  return switch (e.type) {
+    'sale' => 'Sale$tag',
+    'sale_cancelled' => 'Sale$tag cancelled',
+    'return' => 'Goods returned$tag',
+    'payment' => e.note.isEmpty ? 'Payment received' : e.note,
+    'payment_cancelled' => e.note.isEmpty ? 'Payment undone' : e.note,
+    'opening' => e.note.isEmpty ? 'Balance brought forward' : e.note,
+    'adjustment' => e.note.isEmpty ? 'Adjustment' : e.note,
+    _ => e.type,
+  };
+}
+
 /// The whole account on one document: what was billed, what was paid, when, and
 /// what is left. Cheques already credited but not yet at the bank are called
 /// out by name, because the customer will otherwise wonder where the money went.
@@ -367,21 +482,7 @@ Future<void> showStatement(BuildContext context, String customerId) async {
     }
   }
 
-  // English only, like every other receipt: the PDF has no Tamil font.
-  String detail(LedgerEntry e) {
-    final ref = byId[e.refId];
-    final tag = ref == null ? '' : ' #${ref.no}';
-    return switch (e.type) {
-      'sale' => 'Sale$tag',
-      'sale_cancelled' => 'Sale$tag cancelled',
-      'return' => 'Goods returned$tag',
-      'payment' => e.note.isEmpty ? 'Payment received' : e.note,
-      'payment_cancelled' => e.note.isEmpty ? 'Payment undone' : e.note,
-      'opening' => e.note.isEmpty ? 'Balance brought forward' : e.note,
-      'adjustment' => e.note.isEmpty ? 'Adjustment' : e.note,
-      _ => e.type,
-    };
-  }
+  String detail(LedgerEntry e) => entryDetail(e, byId);
 
   await showReceipt(
     context,
