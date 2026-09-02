@@ -176,7 +176,14 @@ class _CustomerScreenState extends State<CustomerScreen> {
             context, MaterialPageRoute(builder: (_) => CustomerForm(customer: c)));
         if (r != null) _reload();
       case 'delete':
-        if (!await ask(context, '${t('Delete')} "${c.name}"?', t('Delete'))) return;
+        // Said plainly, because it is not undoable: the account has to be
+        // square to get here, but the sales still go with the person.
+        if (!await ask(
+            context,
+            '${t('Delete')} "${c.name}"? ${t('Their sales and payments go too.')}',
+            t('Delete'))) {
+          return;
+        }
         if (!mounted) return;
         final ok =
             await guard(context, () => s.deleteCustomer(c.id).then((_) => true));
@@ -372,6 +379,44 @@ Future<void> showOutstanding(BuildContext context, String customerId) async {
   await showReceipt(context, r);
 }
 
+/// One line of a customer document: an entry, and the balance after it as the
+/// customer will read it.
+typedef AccountLine = ({LedgerEntry entry, int balance});
+
+/// The account as a customer should see it, oldest first.
+///
+/// A cancelled sale is two entries that cancel each other out, and so is an
+/// undone payment. Both belong on the shop's own screen, where the seller needs
+/// to see that a correction happened. On a document sent to a customer they are
+/// noise at best — "Sale #12" followed by "Sale #12 cancelled" reads as a
+/// mistake rather than as a correction — so both halves come out together, and
+/// the pair nets to nothing, which is what keeps the total right.
+///
+/// The balance is then re-run over what is left rather than taken from the
+/// stored one. That is the whole point: every printed line adds up to the one
+/// below it, so nothing on the page can be argued with.
+List<AccountLine> forCustomer(List<LedgerEntry> newestFirst) {
+  final cancelledSales = {
+    for (final e in newestFirst)
+      if (e.type == 'sale_cancelled') e.refId
+  };
+  final undonePayments = {
+    for (final e in newestFirst)
+      if (e.type == 'payment_cancelled') e.refId
+  };
+  bool show(LedgerEntry e) => switch (e.type) {
+        'sale_cancelled' || 'payment_cancelled' => false,
+        'sale' => !cancelledSales.contains(e.refId),
+        _ => !undonePayments.contains(e.id),
+      };
+
+  var running = 0;
+  return [
+    for (final e in newestFirst.reversed)
+      if (show(e)) (entry: e, balance: running += e.amount)
+  ];
+}
+
 /// Builds the outstanding report. Top level and free of any screen, because
 /// this is the document a customer is handed to ask them for money and its
 /// figures have to be checkable on their own.
@@ -388,17 +433,17 @@ Receipt outstandingReceipt(
   final stillOpen = {for (final d in open.bills) d.id};
 
   // Oldest first, cut to start at the bill that is still owed for.
-  final chronological = entries.reversed.toList();
+  final account = forCustomer(entries);
   final from = oldest == null
-      ? chronological.length
-      : chronological.indexWhere((e) => e.type == 'sale' && e.refId == oldest.id);
-  final shown = from < 0 ? chronological : chronological.sublist(from);
+      ? account.length
+      : account.indexWhere((r) => r.entry.type == 'sale' && r.entry.refId == oldest.id);
+  final shown = from < 0 ? account : account.sublist(from);
 
   // Everything before that point nets to a single figure. Taking it from the
   // running balance rather than re-adding the entries is what guarantees the
   // report ends on the same number as the account itself.
   final broughtForward =
-      shown.isEmpty ? open.total : shown.first.balanceAfter - shown.first.amount;
+      shown.isEmpty ? open.total : shown.first.balance - shown.first.entry.amount;
 
   String detail(LedgerEntry e) {
     final base = entryDetail(e, byId);
@@ -417,13 +462,13 @@ Receipt outstandingReceipt(
     statement: [
       if (broughtForward != 0)
         (
-          onDayMs(shown.isEmpty ? c.createdAt : shown.first.createdAt),
+          onDayMs(shown.isEmpty ? c.createdAt : shown.first.entry.createdAt),
           'Balance brought forward',
           broughtForward,
           broughtForward
         ),
-      for (final e in shown)
-        (onDayMs(e.createdAt), detail(e), e.amount, e.balanceAfter)
+      for (final r in shown)
+        (onDayMs(r.entry.createdAt), detail(r.entry), r.entry.amount, r.balance)
     ],
     totals: [
       (open.total > 0 ? 'Total to pay' : 'Nothing outstanding', open.total.abs()),
@@ -453,12 +498,21 @@ String entryDetail(LedgerEntry e, Map<String, Doc> byId) {
     'sale' => 'Sale$tag',
     'sale_cancelled' => 'Sale$tag cancelled',
     'return' => 'Goods returned$tag',
-    'payment' => e.note.isEmpty ? 'Payment received' : e.note,
+    'payment' => paymentDetail(e),
     'payment_cancelled' => e.note.isEmpty ? 'Payment undone' : e.note,
     'opening' => e.note.isEmpty ? 'Balance brought forward' : e.note,
     'adjustment' => e.note.isEmpty ? 'Adjustment' : e.note,
     _ => e.type,
   };
+}
+
+/// A payment reads as whatever was typed against it — a cheque writes its own
+/// number there — with how the money arrived added, unless the note has already
+/// said it.
+String paymentDetail(LedgerEntry e) {
+  final how = e.method == 'cheque' ? '' : methodLabel(e.method);
+  final base = e.note.isEmpty ? 'Payment received' : e.note;
+  return how.isEmpty ? base : '$base  ·  $how';
 }
 
 /// The whole account on one document: what was billed, what was paid, when, and
@@ -473,12 +527,15 @@ Future<void> showStatement(BuildContext context, String customerId) async {
   if (!context.mounted) return;
 
   final byId = {for (final d in docs) d.id: d};
+  // Cancelled sales and undone payments are left out here too: a statement is
+  // the long document, not the raw one, and the pairs it drops net to nothing.
+  final account = forCustomer(entries);
   var billed = 0, paid = 0;
-  for (final e in entries) {
-    if (e.amount > 0) {
-      billed += e.amount;
+  for (final r in account) {
+    if (r.entry.amount > 0) {
+      billed += r.entry.amount;
     } else {
-      paid += -e.amount;
+      paid += -r.entry.amount;
     }
   }
 
@@ -495,8 +552,8 @@ Future<void> showStatement(BuildContext context, String customerId) async {
       reference: 'Account as it stands on ${onDay(DateTime.now())}',
       // Oldest first: a statement is read downwards, the way it was built up.
       statement: [
-        for (final e in entries.reversed)
-          (onDayMs(e.createdAt), detail(e), e.amount, e.balanceAfter)
+        for (final r in account)
+          (onDayMs(r.entry.createdAt), detail(r.entry), r.entry.amount, r.balance)
       ],
       totals: [
         (
@@ -520,7 +577,8 @@ Future<void> showStatement(BuildContext context, String customerId) async {
         if (c.balance > 0)
           'Please settle ${money(c.balance)} at your earliest convenience.',
       ],
-      footnote: 'This statement lists every entry on the account to date.',
+      footnote: 'Every entry on the account to date. Sales and payments that '
+          'were cancelled are left out, along with the entries that reversed them.',
     ),
   );
 }
@@ -646,30 +704,73 @@ class _AdjustScreenState extends State<AdjustScreen> {
 /// handed over again any time — not only in the seconds after taking the money.
 Future<void> showPaymentReceipt(
     BuildContext context, Customer c, String ledgerId) async {
-  final e = await s.ledgerEntry(ledgerId);
-  if (e == null || !context.mounted) return;
-  final after = e.balanceAfter;
-  await showReceipt(
-    context,
-    Receipt(
-      kind: 'Payment',
-      no: e.no,
-      date: e.createdAt,
-      customer: c.name,
-      customerPhone: c.phone,
-      totals: [
-        ('Payment received', -e.amount),
+  final entries = await s.ledger(c.id);
+  final docs = await s.docs(customerId: c.id);
+  final r = paymentReceipt(c, ledgerId, entries, docs);
+  if (r == null || !context.mounted) return;
+  await showReceipt(context, r);
+}
+
+/// How much of the account a payment receipt carries with it.
+const _paymentContext = 8;
+
+/// The receipt for one payment, with the run-up to it.
+///
+/// "Paid 5,000, still owing 3,000" on its own is a figure the customer has to
+/// take on trust. The same receipt with the bills and payments that led to it
+/// answers the question before it is asked, which is the whole reason the
+/// customer keeps the slip.
+///
+/// Null when the payment is no longer on the account — it was undone, and there
+/// is no receipt to give for money that went back.
+Receipt? paymentReceipt(
+    Customer c, String ledgerId, List<LedgerEntry> entries, List<Doc> docs) {
+  final account = forCustomer(entries);
+  final at = account.indexWhere((r) => r.entry.id == ledgerId);
+  if (at < 0) return null;
+
+  final e = account[at].entry, after = account[at].balance;
+  final byId = {for (final d in docs) d.id: d};
+  final from = at - _paymentContext < 0 ? 0 : at - _paymentContext;
+  final shown = account.sublist(from, at + 1);
+  final broughtForward = shown.first.balance - shown.first.entry.amount;
+  final how = methodLabel(e.method);
+
+  return Receipt(
+    kind: 'Payment',
+    no: e.no,
+    date: e.createdAt,
+    customer: c.name,
+    customerPhone: c.phone,
+    reference: how.isEmpty ? null : 'Received by $how',
+    statement: [
+      if (broughtForward != 0)
         (
-          after > 0
-              ? 'Still owing'
-              : after < 0
-                  ? 'Advance held'
-                  : 'Account settled',
-          after.abs()
+          onDayMs(shown.first.entry.createdAt),
+          'Balance brought forward',
+          broughtForward,
+          broughtForward
         ),
-      ],
-      footnote: e.note.isEmpty ? 'Received with thanks.' : e.note,
-    ),
+      for (final r in shown)
+        (onDayMs(r.entry.createdAt), entryDetail(r.entry, byId), r.entry.amount, r.balance)
+    ],
+    totals: [
+      ('Payment received', -e.amount),
+      (
+        after > 0
+            ? 'Still owing'
+            : after < 0
+                ? 'Advance held'
+                : 'Account settled',
+        after.abs()
+      ),
+    ],
+    notes: [
+      if (from > 0)
+        'The account before ${onDayMs(shown.first.entry.createdAt)} is shown as one '
+            'brought forward line. Ask for a full statement to see all of it.',
+    ],
+    footnote: e.note.isEmpty ? 'Received with thanks.' : e.note,
   );
 }
 
@@ -730,9 +831,15 @@ class _LedgerRow extends StatelessWidget {
         title: Text('${t(label)}${doc == null ? '' : ' #${doc.no}'}',
             style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(
-            [when(e.createdAt), if (e.note.isNotEmpty) e.note].join('\n'),
+            [
+              when(e.createdAt),
+              [
+                if (methodLabel(e.method).isNotEmpty) t(methodLabel(e.method)),
+                if (e.note.isNotEmpty) e.note,
+              ].join('   •   '),
+            ].where((x) => x.isNotEmpty).join('\n'),
             style: const TextStyle(fontSize: 13)),
-        isThreeLine: e.note.isNotEmpty,
+        isThreeLine: e.note.isNotEmpty || e.method.isNotEmpty,
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           Text('${e.amount > 0 ? '+' : '-'}${money(e.amount.abs())}',
               style: TextStyle(
@@ -842,6 +949,13 @@ class _PaymentScreenState extends State<PaymentScreen> {
   bool _byCheque = false;
   DateTime _due = DateTime.now();
 
+  /// How the cash arrived. Cheques say so themselves.
+  String _method = 'cash';
+
+  /// The day the money came in. Money is often entered days late, so this can
+  /// be moved back; left alone it is today, which is the normal case.
+  DateTime? _taken;
+
   @override
   void dispose() {
     _amount.dispose();
@@ -851,17 +965,22 @@ class _PaymentScreenState extends State<PaymentScreen> {
     super.dispose();
   }
 
-  Future<void> _pickDue() async {
+  Future<DateTime?> _pickDay(DateTime initial, {bool future = false}) async {
     final now = DateTime.now();
-    final picked = await showDatePicker(
+    return showDatePicker(
       context: context,
-      initialDate: _due,
+      initialDate: initial,
       // A post-dated cheque is normal here; an old one still needs entering.
       firstDate: DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 2),
+      lastDate: future ? DateTime(now.year + 2) : now,
     );
-    if (picked != null && mounted) setState(() => _due = picked);
   }
+
+  /// Midday on the chosen day, so an entry moved back cannot land before a
+  /// bill written that same morning.
+  int? get _takenAt => _taken == null
+      ? null
+      : DateTime(_taken!.year, _taken!.month, _taken!.day, 12).millisecondsSinceEpoch;
 
   Future<void> _save() async {
     final amount = parseMoney(_amount.text) ?? 0;
@@ -877,6 +996,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 dueAt: _due.millisecondsSinceEpoch,
                 bank: _bank.text,
                 note: _note.text.trim(),
+                at: _takenAt,
               ));
       if (id == null || !mounted) return;
       await showChequeReceipt(context, id);
@@ -884,8 +1004,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
       return;
     }
 
-    final id = await guard(context,
-        () => s.recordPayment(widget.customer.id, amount, note: _note.text.trim()));
+    final id = await guard(
+        context,
+        () => s.recordPayment(widget.customer.id, amount,
+            note: _note.text.trim(), method: _method, at: _takenAt));
     if (id == null || !mounted) return;
     await showPaymentReceipt(context, widget.customer, id);
     nav.pop(true);
@@ -942,6 +1064,27 @@ class _PaymentScreenState extends State<PaymentScreen> {
             ),
           ),
         ],
+        if (!_byCheque) ...[
+          const SizedBox(height: 12),
+          SegmentedButton<String>(
+            style: SegmentedButton.styleFrom(
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                selectedBackgroundColor: color,
+                selectedForegroundColor: Colors.white),
+            segments: [
+              ButtonSegment(
+                  value: 'cash',
+                  label: Fit(t('By hand')),
+                  icon: const Icon(Icons.wallet)),
+              ButtonSegment(
+                  value: 'bank',
+                  label: Fit(t('Bank')),
+                  icon: const Icon(Icons.account_balance)),
+            ],
+            selected: {_method},
+            onSelectionChanged: (v) => setState(() => _method = v.first),
+          ),
+        ],
         if (_byCheque) ...[
           const SizedBox(height: 10),
           TextField(
@@ -961,19 +1104,29 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 prefixIcon: const Icon(Icons.account_balance)),
           ),
           const SizedBox(height: 10),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.event, color: C.quote),
-              title: Text(t('Date on the cheque'),
-                  style: const TextStyle(fontSize: 14, color: Colors.black54)),
-              subtitle: Text(onDay(_due),
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black87)),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _pickDue,
-            ),
+          _DayTile(
+            label: 'Date on the cheque',
+            day: _due,
+            color: C.quote,
+            onPick: () async {
+              final d = await _pickDay(_due, future: true);
+              if (d != null && mounted) setState(() => _due = d);
+            },
           ),
         ],
+        const SizedBox(height: 10),
+        // Money is often written up days after it came in, so the date can be
+        // moved back. Left alone it is today, which is what usually happens.
+        _DayTile(
+          label: 'Date received',
+          day: _taken ?? DateTime.now(),
+          color: color,
+          hint: _taken == null ? 'Today' : null,
+          onPick: () async {
+            final d = await _pickDay(_taken ?? DateTime.now());
+            if (d != null && mounted) setState(() => _taken = d);
+          },
+        ),
         const SizedBox(height: 10),
         TextField(
           controller: _note,
@@ -1021,4 +1174,38 @@ class _PaymentScreenState extends State<PaymentScreen> {
       ]),
     );
   }
+}
+
+/// A date the seller can move, shown big enough to read at a glance and to hit
+/// with a thumb.
+class _DayTile extends StatelessWidget {
+  final String label;
+  final DateTime day;
+  final Color color;
+
+  /// Shown beside the date when it is still the default — "Today", so nobody
+  /// wonders whether they were meant to set something.
+  final String? hint;
+  final VoidCallback onPick;
+  const _DayTile(
+      {required this.label,
+      required this.day,
+      required this.color,
+      required this.onPick,
+      this.hint});
+
+  @override
+  Widget build(BuildContext context) => Card(
+        child: ListTile(
+          leading: Icon(Icons.event, color: color),
+          title: Text(t(label),
+              style: const TextStyle(fontSize: 14, color: Colors.black54)),
+          subtitle: Text(
+              [onDay(day), if (hint != null) '(${t(hint!)})'].join('  '),
+              style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.w700, color: Colors.black87)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: onPick,
+        ),
+      );
 }

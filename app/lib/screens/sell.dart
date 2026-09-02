@@ -11,7 +11,15 @@ import 'products.dart';
 
 class SellScreen extends StatefulWidget {
   final Customer? customer;
-  const SellScreen({this.customer, super.key});
+
+  /// A sale being put right rather than a new one. The screen is the same —
+  /// the items, the prices and the cash taken are the things that were wrong —
+  /// but it saves back onto the bill instead of writing another one.
+  final Doc? editing;
+  final List<DocItem> editingItems;
+
+  const SellScreen(
+      {this.customer, this.editing, this.editingItems = const [], super.key});
   @override
   State<SellScreen> createState() => _SellScreenState();
 }
@@ -19,9 +27,23 @@ class SellScreen extends StatefulWidget {
 class _SellScreenState extends State<SellScreen> {
   late Customer? _customer = widget.customer;
   bool _quote = false;
-  final _lines = <SellLine>[];
-  final _paid = TextEditingController();
+  late final _lines = [
+    for (final i in widget.editingItems)
+      SellLine(
+          productId: i.productId,
+          batchId: i.batchId,
+          name: i.name,
+          price: i.price,
+          listPrice: i.listPrice,
+          qty: i.qty)
+  ];
+  late final _paid = TextEditingController(
+      text: (widget.editing?.paid ?? 0) == 0
+          ? ''
+          : (widget.editing!.paid / 100).toString());
   bool _saving = false;
+
+  bool get _editing => widget.editing != null;
 
   int get _total => _lines.fold(0, (a, l) => a + l.total);
   int get _paidAmount => parseMoney(_paid.text) ?? 0;
@@ -44,8 +66,10 @@ class _SellScreenState extends State<SellScreen> {
     if (p == null || !mounted) return;
 
     // A quotation may be written for stock not bought yet, so it can use any
-    // batch; a sale can only draw from batches that still have stock.
-    final all = await s.batches(p.id, availableOnly: !_quote);
+    // batch; a sale can only draw from batches that still have stock. A sale
+    // being corrected is already holding stock of its own, which goes back on
+    // the shelf when it saves, so it is not held to today's count either.
+    final all = await s.batches(p.id, availableOnly: !_quote && !_editing);
     if (!mounted) return;
     if (all.isEmpty) {
       toast(context, '${p.name}: ${t('no stock available')}', bad: true);
@@ -54,7 +78,8 @@ class _SellScreenState extends State<SellScreen> {
     final line = await Navigator.push<SellLine>(
         context,
         MaterialPageRoute(
-            builder: (_) => SellLineForm(product: p, batches: all, quote: _quote)));
+            builder: (_) => SellLineForm(
+                product: p, batches: all, quote: _quote, anyBatch: _quote || _editing)));
     if (line != null) setState(() => _lines.add(line));
   }
 
@@ -64,6 +89,23 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
     setState(() => _saving = true);
+
+    if (_editing) {
+      final nav = Navigator.of(context);
+      final ok = await guard(
+          context,
+          () => s
+              .editDoc(widget.editing!.id, lines: _lines, paid: _paidAmount)
+              .then((_) => true));
+      if (!mounted) return;
+      setState(() => _saving = false);
+      if (ok == true) {
+        toast(context, t('Sale corrected'));
+        nav.pop(true);
+      }
+      return;
+    }
+
     final id = await guard(
         context,
         () => s.saveDoc(
@@ -85,12 +127,17 @@ class _SellScreenState extends State<SellScreen> {
     return Scaffold(
       appBar: AppBar(
           backgroundColor: _quote ? C.quote : C.sell,
-          title: Text(t(_quote ? 'Quote' : 'Sell'))),
+          title: Text(_editing
+              ? '${t('Edit sale')} #${widget.editing!.no}'
+              : t(_quote ? 'Quote' : 'Sell'))),
       // Three-button navigation keeps a bar across the bottom of the screen.
       // Without this, Add item sits half under it and reaching for it presses
       // Home instead.
       body: SafeArea(
           child: Column(children: [
+        // A sale being corrected is a sale; it cannot turn into a quotation,
+        // and it cannot change hands to another customer either.
+        if (!_editing)
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
           child: SegmentedButton<bool>(
@@ -123,8 +170,8 @@ class _SellScreenState extends State<SellScreen> {
               title: Text(_customer?.name ?? t('Choose customer'),
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
               subtitle: _customer == null ? null : Text(_customer!.phone),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _pickCustomer,
+              trailing: _editing ? null : const Icon(Icons.chevron_right),
+              onTap: _editing ? null : _pickCustomer,
             ),
           ),
         ),
@@ -222,14 +269,19 @@ class SellLineForm extends StatefulWidget {
   final Product product;
   final List<Batch> batches;
 
-  /// A quotation may be written for stock not on the shelf yet, so it is not
-  /// held to what is currently available.
+  /// Colours the screen and names it. A quotation is not a bill.
   final bool quote;
+
+  /// Skips the "is there enough on the shelf" check: a quotation may be written
+  /// for stock not bought yet, and a sale being corrected is holding stock of
+  /// its own that goes back when it saves. The store checks for real either way.
+  final bool anyBatch;
 
   const SellLineForm(
       {required this.product,
       required this.batches,
       this.quote = false,
+      this.anyBatch = false,
       super.key});
   @override
   State<SellLineForm> createState() => _SellLineFormState();
@@ -268,7 +320,7 @@ class _SellLineFormState extends State<SellLineForm> {
 
   void _submit() {
     if (_q <= 0) return toast(context, t('Quantity must be more than zero'), bad: true);
-    if (!widget.quote && _q > _batch.qtyLeft) {
+    if (!widget.anyBatch && _q > _batch.qtyLeft) {
       return toast(context, '${t('Only')} ${_batch.qtyLeft} ${t('available')}', bad: true);
     }
     if (_p < 0) return toast(context, t('Enter a valid selling price'), bad: true);

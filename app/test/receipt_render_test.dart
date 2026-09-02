@@ -56,7 +56,16 @@ void main() {
       date: 1755930000000,
       customer: 'ABC Shop',
       customerPhone: '0712345678',
-      totals: [('Payment received', 50000), ('Still owing', 298000)],
+      reference: 'Received by Bank transfer',
+      // The run-up to the payment, so "still owing Rs. 2,980" is a figure the
+      // customer can follow rather than one they have to trust.
+      statement: [
+        ('12 Jul 2026', 'Balance brought forward', 200000, 200000),
+        ('2 Aug 2026', 'Sale #9', 400000, 600000),
+        ('4 Aug 2026', 'Goods returned #3', -52000, 548000),
+        ('23 Aug 2026', 'Payment received  ·  Bank transfer', -250000, 298000),
+      ],
+      totals: [('Payment received', 250000), ('Still owing', 298000)],
       footnote: 'Received with thanks.',
     ),
     'discounted': const Receipt(
@@ -217,6 +226,35 @@ void main() {
     expect(text, contains('already taken off this balance'),
         reason: 'the cheque is deducted and says so');
     expect(text, contains('7 days from now'), reason: 'how long it has left');
+  });
+
+  test('a payment receipt shows what the money is going against', () async {
+    final text =
+        pdfText(await buildReceipt(samples['payment']!, compress: false));
+
+    expect(text, contains('Received by Bank transfer'),
+        reason: 'how the money came in');
+    expect(text, contains('Sale #9'), reason: 'the bill it is going against');
+    expect(text, contains('Goods returned #3'), reason: 'and anything else since');
+    expect(text, contains('Payment received'));
+    expect(text, contains('Still owing'));
+  });
+
+  test('a corrected bill says so on its face', () async {
+    final r = saleReceipt(
+      Doc.fromRow(const {
+        'id': 'd1', 'no': 9, 'kind': 'sale', 'status': 'active',
+        'customer_id': 'c1', 'customer_name': 'ABC Shop', 'customer_phone': '',
+        'total': 40000, 'paid': 0, 'settled': 0,
+        'created_at': 1755930000000, 'edited_at': 1756930000000,
+      }),
+      const [],
+      40000,
+    );
+
+    expect(r.reference, startsWith('Corrected on'));
+    expect(pdfText(await buildReceipt(r, compress: false)),
+        contains('Corrected on'));
   });
 
   test('a discounted bill shows what was knocked off, and when to pay',

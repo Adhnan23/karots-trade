@@ -142,8 +142,14 @@ void main() {
     final db = await databaseFactory.openDatabase(path,
         options: OpenDatabaseOptions(
             version: 4,
+            // A real v4 database — the shipped v1 schema with the migrations up
+            // to 4 run over it — rather than today's schema pretending to be
+            // old. Today's schema has columns v4 never had.
             onCreate: (d, _) async {
-              for (final st in schema) {
+              for (final st in [
+                _v1,
+                for (final v in [2, 3, 4]) migrations[v]!
+              ].expand((x) => x)) {
                 await d.execute(st);
               }
             }));

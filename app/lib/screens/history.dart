@@ -7,6 +7,7 @@ import '../store.dart' as s;
 import 'buy.dart' show NumField, PurchasesList;
 import 'cheques.dart';
 import 'customers.dart';
+import 'sell.dart';
 
 /// Search text plus a date window, shared by all three tabs.
 class Filters {
@@ -357,6 +358,19 @@ class _DocScreenState extends State<DocScreen> {
     });
   }
 
+  /// Puts a sale right on the same bill, instead of cancelling it and writing
+  /// the whole thing again.
+  Future<void> _edit(Doc d, List<DocItem> items) async {
+    final c = await s.customer(d.customerId);
+    if (c == null || !mounted) return;
+    final done = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+            builder: (_) =>
+                SellScreen(customer: c, editing: d, editingItems: items)));
+    if (done == true) _reload();
+  }
+
   Future<void> _convert(Doc d) async {
     final paid = await showDialog<int>(
       context: context,
@@ -388,6 +402,10 @@ class _DocScreenState extends State<DocScreen> {
                   : C.sell;
           final canReturn =
               !d.isQuote && !d.isCancelled && items.any((i) => i.returnable > 0);
+          // Once goods have come back, the lines they came off cannot be
+          // rewritten under them; that sale gets cancelled instead.
+          final canEdit =
+              !d.isQuote && !d.isCancelled && items.every((i) => i.returned == 0);
           final saved = items.fold(0, (a, i) => a + i.discount);
 
           return Scaffold(
@@ -422,6 +440,12 @@ class _DocScreenState extends State<DocScreen> {
               ),
               const SizedBox(height: 10),
               StatusChip(d),
+              if (d.editedAt != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text('${t('Corrected on')} ${when(d.editedAt!)}',
+                      style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                ),
               const SizedBox(height: 14),
               for (final i in items)
                 Card(
@@ -468,6 +492,18 @@ class _DocScreenState extends State<DocScreen> {
                   icon: const Icon(Icons.check_circle),
                   label: Text(t('Convert to sale')),
                   onPressed: () => _convert(d),
+                ),
+              ],
+              if (canEdit) ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(56),
+                      foregroundColor: C.sell),
+                  icon: const Icon(Icons.edit),
+                  label: Text(t('Edit this sale'),
+                      style: const TextStyle(fontSize: 18)),
+                  onPressed: () => _edit(d, items),
                 ),
               ],
               if (canReturn) ...[
@@ -793,7 +829,13 @@ Receipt saleReceipt(Doc d, List<DocItem> items, int owing) {
     date: d.createdAt,
     customer: d.customerName,
     customerPhone: d.customerPhone,
-    reference: d.fromQuote == null ? null : 'Converted from a quotation',
+    reference: switch (d) {
+      // A corrected bill has to say so, or the customer holding the first
+      // printout is looking at two documents with the same number.
+      _ when d.editedAt != null => 'Corrected on ${when(d.editedAt!)}',
+      _ when d.fromQuote != null => 'Converted from a quotation',
+      _ => null,
+    },
     lines: [for (final i in items) (_line(i), i.qty, i.price)],
     totals: [
       ('Total', d.total),

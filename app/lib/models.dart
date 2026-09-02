@@ -71,6 +71,10 @@ class Doc {
   /// payment before and since. Derived by the store, never stored.
   final int settled;
 
+  /// When the sale was last corrected, or null if it never was. A sale that
+  /// was put right is still the same sale, so it keeps its number.
+  final int? editedAt;
+
   bool get isQuote => kind == 'quote';
   bool get isCancelled => status == 'cancelled';
   bool get isConverted => status == 'completed';
@@ -92,6 +96,7 @@ class Doc {
         total = _i(r['total']),
         paid = _i(r['paid']),
         settled = _i(r['settled']),
+        editedAt = (r['edited_at'] as num?)?.toInt(),
         createdAt = _i(r['created_at']);
 }
 
@@ -160,8 +165,20 @@ class Cheque {
         settledAt = (r['settled_at'] as num?)?.toInt();
 }
 
+/// How the money came in. Empty for a sale, and for payments taken before the
+/// app started asking — those simply read as "Payment received".
+String methodLabel(String method) => switch (method) {
+      'cash' => 'Cash in hand',
+      'bank' => 'Bank transfer',
+      'cheque' => 'Cheque',
+      _ => '',
+    };
+
 class LedgerEntry {
   final String id, customerId, type, note;
+
+  /// cash | bank | cheque, or empty. See [methodLabel].
+  final String method;
   final String? refId;
   final int no, amount, createdAt;
 
@@ -177,6 +194,7 @@ class LedgerEntry {
         balanceAfter = _i(r['balance_after']),
         type = _s(r['type']),
         note = _s(r['note']),
+        method = _s(r['method']),
         refId = r['ref_id'] as String?,
         amount = _i(r['amount']),
         createdAt = _i(r['created_at']);

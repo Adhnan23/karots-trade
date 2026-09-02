@@ -370,6 +370,29 @@ const _ta = <String, String>{
       'காசோலை திரும்பினால் "திரும்பியது" எனக் குறிக்கவும்; தொகை மீண்டும் சேரும்.',
   'day left': 'நாள் உள்ளது',
   'days left': 'நாட்கள் உள்ளன',
+
+  // How the money came in, and when
+  'By hand': 'கையில்',
+  'Bank': 'வங்கி',
+  'Cash in hand': 'கையில் ரொக்கம்',
+  'Bank transfer': 'வங்கி மாற்றம்',
+  'Date received': 'பெற்ற தேதி',
+
+  // Correcting a sale instead of cancelling it
+  'Edit sale': 'விற்பனையைத் திருத்து',
+  'Edit this sale': 'இந்த விற்பனையைத் திருத்து',
+  'Sale corrected': 'விற்பனை திருத்தப்பட்டது',
+  'Corrected on': 'திருத்திய நாள்',
+  'Items came back from this sale, so cancel it instead':
+      'இந்த விற்பனையில் பொருட்கள் திரும்பியுள்ளன, ரத்து செய்யவும்',
+
+  // Removing a customer who is done
+  'Their sales and payments go too.':
+      'இவரின் விற்பனைகளும் பணப் பதிவுகளும் நீங்கும்.',
+  'Settle this customer first, then they can be deleted':
+      'முதலில் கணக்கைத் தீர்க்கவும், பின் நீக்கலாம்',
+  'This customer has a cheque still waiting':
+      'இந்த வாடிக்கையாளரின் காசோலை காத்திருக்கிறது',
 };
 
 // ---------------------------------------------------------------- colours

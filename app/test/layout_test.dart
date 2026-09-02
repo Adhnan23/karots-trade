@@ -109,6 +109,25 @@ void main() {
             reason: 'owes more / owes less');
       });
 
+      testWidgets('payment fits ${size.width.toInt()}px in $lang', (t) async {
+        await t.binding.setSurfaceSize(size);
+        late Customer c;
+        await t.runAsync(() async {
+          c = (await s.customer(await shop()))!;
+          locale.value = lang;
+          await t.pumpWidget(
+              MaterialApp(theme: appTheme(), home: PaymentScreen(c)));
+          await settle(t);
+        });
+
+        expect(tester_(t), isEmpty, reason: 'nothing overflowed');
+        // Cash or cheque, and — for cash — by hand or by bank.
+        expect(find.byType(SegmentedButton<bool>), findsOneWidget);
+        expect(find.byType(SegmentedButton<String>), findsOneWidget);
+        // The one date tile on a cash payment: when the money came in.
+        expect(find.byIcon(Icons.event), findsOneWidget);
+      });
+
       testWidgets('history fits ${size.width.toInt()}px in $lang', (t) async {
         await t.binding.setSurfaceSize(size);
         await t.runAsync(() async {

@@ -20,7 +20,7 @@ Future<Database> openDb({String? path}) async {
   _db = await databaseFactory.openDatabase(
     file,
     options: OpenDatabaseOptions(
-      version: 5,
+      version: 6,
       onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
       onCreate: (d, _) async {
         for (final s in schema) {
@@ -120,7 +120,10 @@ const schema = [
       advance_used INTEGER NOT NULL DEFAULT 0,
       from_quote TEXT,
       note TEXT NOT NULL DEFAULT '',
-      created_at INTEGER NOT NULL)''',
+      created_at INTEGER NOT NULL,
+      -- Set when a sale was corrected after it was written, so the bill can
+      -- say so. Null on every sale that was right the first time.
+      edited_at INTEGER)''',
   'CREATE INDEX ix_docs_customer ON docs(customer_id)',
   '''CREATE TABLE doc_items(
       id TEXT PRIMARY KEY,
@@ -160,6 +163,10 @@ const schema = [
       amount INTEGER NOT NULL,
       ref_id TEXT,
       note TEXT NOT NULL DEFAULT '',
+      -- How the money came in: cash | bank | cheque. Empty on a sale, and on
+      -- payments taken before the app asked. Kept apart from `note`, which is
+      -- whatever the seller typed.
+      method TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL)''',
   'CREATE INDEX ix_ledger_customer ON ledger(customer_id)',
   // A correction to a batch that was entered wrong, kept so the change is
@@ -242,5 +249,16 @@ const migrations = <int, List<String>>{
               'Cheque ' || h.cheque_no, h.created_at
        FROM cheques h WHERE h.status = 'pending' ''',
     "UPDATE cheques SET ledger_id = 'chq' || id WHERE status = 'pending'",
+  ],
+  // Two new columns, both with a default, so every row already on the phone
+  // stays exactly as it is: payments taken before today simply do not say how
+  // the money arrived, and no sale claims to have been corrected.
+  6: [
+    "ALTER TABLE ledger ADD COLUMN method TEXT NOT NULL DEFAULT ''",
+    'ALTER TABLE docs ADD COLUMN edited_at INTEGER',
+    // Cheques always credited through a payment row; naming the method now
+    // lets a statement tell a cheque from cash without reading the note.
+    "UPDATE ledger SET method = 'cheque' "
+        "WHERE type = 'payment' AND ref_id IN (SELECT id FROM cheques)",
   ],
 };

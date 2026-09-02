@@ -309,21 +309,33 @@ Future<String> saveCustomer({String? id, required String name, String phone = ''
   return id;
 }
 
-/// Only a customer with no history at all can be removed.
+/// A customer goes away only once they are square with the shop: nothing owed,
+/// no advance sitting with you, and no cheque of theirs still waiting.
 ///
-/// The ledger and cheques both cascade-delete with the customer, so an account
-/// holding an advance — money already handed over — would disappear along with
-/// them if `docs` were the only thing checked.
+/// Their whole history goes with them — sales, returns and the ledger — which
+/// is exactly why the balance has to be nil first. A debt must never be made to
+/// vanish by deleting the person who owes it, and money handed over in advance
+/// must never vanish either.
 Future<void> deleteCustomer(String id) async {
-  final used = (await db.rawQuery('''
-      SELECT (SELECT COUNT(*) FROM docs WHERE customer_id = ?)
-           + (SELECT COUNT(*) FROM ledger WHERE customer_id = ?)
-           + (SELECT COUNT(*) FROM cheques WHERE customer_id = ?) n''',
-      [id, id, id])).first['n'] as int;
-  if (used > 0) {
-    throw Exception('This customer has transactions and cannot be deleted');
+  if (await balance(id) != 0) {
+    throw Exception('Settle this customer first, then they can be deleted');
   }
-  await db.delete('customers', where: 'id = ?', whereArgs: [id]);
+  final waiting = (await db.rawQuery(
+              "SELECT COUNT(*) n FROM cheques WHERE customer_id = ? AND status = 'pending'",
+              [id]))
+          .first['n'] as int;
+  if (waiting > 0) {
+    throw Exception('This customer has a cheque still waiting');
+  }
+
+  await db.transaction((tx) async {
+    // `ledger` and `cheques` cascade with the customer; `returns` and `docs`
+    // do not, and returns point at docs, so those two come off by hand and in
+    // that order. Their line items cascade behind them.
+    await tx.delete('returns', where: 'customer_id = ?', whereArgs: [id]);
+    await tx.delete('docs', where: 'customer_id = ?', whereArgs: [id]);
+    await tx.delete('customers', where: 'id = ?', whereArgs: [id]);
+  });
 }
 
 /// Positive = customer owes you. Negative = customer has an advance with you.
@@ -354,7 +366,13 @@ Future<LedgerEntry?> ledgerEntry(String id) async {
 
 /// Works for both settling a debt and paying in advance — an advance is simply
 /// a payment recorded while nothing is owed, which pushes the balance negative.
-Future<String> recordPayment(String customerId, int amount, {String note = ''}) async {
+///
+/// [method] is how the money arrived: `cash`, `bank`, or empty. [at] is when it
+/// arrived, for money entered days after it was taken; leaving it out means
+/// now. Backdating is not cosmetic — payments settle bills oldest first, so the
+/// date decides which bill this one clears.
+Future<String> recordPayment(String customerId, int amount,
+    {String note = '', String method = '', int? at}) async {
   if (amount <= 0) throw Exception('Payment must be more than zero');
   final id = uid();
   await db.transaction((tx) async {
@@ -366,7 +384,8 @@ Future<String> recordPayment(String customerId, int amount, {String note = ''}) 
       'amount': -amount,
       'ref_id': null,
       'note': note,
-      'created_at': _now(),
+      'method': method,
+      'created_at': at ?? _now(),
     });
   });
   return id;
@@ -477,13 +496,16 @@ Future<String> saveCheque({
   required int dueAt,
   String bank = '',
   String note = '',
+  int? at,
 }) async {
   if (amount <= 0) throw Exception('Payment must be more than zero');
   if (chequeNo.trim().isEmpty) throw Exception('Cheque number is required');
 
   final id = uid(), ledgerId = uid();
   await db.transaction((tx) async {
-    final now = _now();
+    // [at] is the day the cheque changed hands, which is not the date written
+    // on it — that is `due_at`, and it can be weeks later.
+    final now = at ?? _now();
     await tx.insert('cheques', {
       'id': id,
       'no': await _nextNo(tx, 'cheques'),
@@ -505,6 +527,7 @@ Future<String> saveCheque({
       'amount': -amount,
       'ref_id': id,
       'note': 'Cheque ${chequeNo.trim()}',
+      'method': 'cheque',
       'created_at': now,
     });
   });
@@ -858,6 +881,110 @@ Future<String> convertQuote(String quoteId, {int paid = 0}) async {
             qty: i.qty))
         .toList(),
   );
+}
+
+/// Puts right a sale that was written wrong — the wrong item, the wrong count,
+/// the wrong price — without cancelling it and starting again.
+///
+/// The sale keeps its number and its date, because it is the same sale; only
+/// what it says changes. Stock goes back to the batches the old lines came
+/// from and is taken again for the new ones, so the shelf ends up where it
+/// would have been had the sale been right the first time. The `sale` ledger
+/// row is moved to the new total rather than a correction being written beside
+/// it: a bill and the debt it created have to be the same number.
+///
+/// A sale with items already returned is out of reach — the goods are back on
+/// the shelf and the customer has been credited, and re-writing the sale under
+/// that would leave both of those pointing at lines that no longer exist.
+Future<void> editDoc(String docId,
+    {required List<SellLine> lines, int paid = 0, String note = ''}) async {
+  if (lines.isEmpty) throw Exception('Add at least one item');
+  for (final l in lines) {
+    if (l.qty <= 0) throw Exception('Quantity must be more than zero');
+    if (l.price < 0) throw Exception('Prices cannot be negative');
+  }
+  if (paid < 0) throw Exception('Payment cannot be negative');
+
+  final d = await doc(docId);
+  if (d == null || d.isQuote) throw Exception('Sale not found');
+  if (d.isCancelled) throw Exception('This sale is cancelled');
+  final total = lines.fold<int>(0, (s, l) => s + l.total);
+
+  await db.transaction((tx) async {
+    final old = (await tx.query('doc_items', where: 'doc_id = ?', whereArgs: [docId]))
+        .map(DocItem.fromRow)
+        .toList();
+    if (old.any((i) => i.returned > 0)) {
+      throw Exception('Items came back from this sale, so cancel it instead');
+    }
+
+    for (final i in old) {
+      await tx.rawUpdate(
+          'UPDATE batches SET qty_left = qty_left + ? WHERE id = ?', [i.qty, i.batchId]);
+    }
+    await tx.delete('doc_items', where: 'doc_id = ?', whereArgs: [docId]);
+
+    for (final l in lines) {
+      final b = await tx.query('batches',
+          columns: ['cost', 'price'], where: 'id = ?', whereArgs: [l.batchId]);
+      if (b.isEmpty) throw Exception('Batch not found');
+      if (l.price < (b.first['cost'] as num).toInt()) {
+        throw Exception('Price is below cost: ${l.name}');
+      }
+
+      await tx.insert('doc_items', {
+        'id': uid(),
+        'doc_id': docId,
+        'product_id': l.productId,
+        'batch_id': l.batchId,
+        'name': l.name,
+        'qty': l.qty,
+        'price': l.price,
+        'list_price':
+            l.listPrice > 0 ? l.listPrice : (b.first['price'] as num).toInt(),
+      });
+
+      final ok = await tx.rawUpdate(
+          'UPDATE batches SET qty_left = qty_left - ? WHERE id = ? AND qty_left >= ?',
+          [l.qty, l.batchId, l.qty]);
+      if (ok != 1) throw Exception('Not enough stock: ${l.name}');
+    }
+
+    // The status guard means a sale cancelled while this screen was open is
+    // not quietly brought back to life.
+    final live = await tx.rawUpdate(
+        "UPDATE docs SET total = ?, paid = ?, note = ?, edited_at = ? "
+        "WHERE id = ? AND status = 'active'",
+        [total, paid, note, _now(), docId]);
+    if (live != 1) throw Exception('This sale is cancelled');
+
+    await tx.update('ledger', {'amount': total},
+        where: "ref_id = ? AND type = 'sale'", whereArgs: [docId]);
+
+    // Cash taken at the counter belongs to this sale, so it moves with it. It
+    // keeps the sale's own date, which is when the money actually changed hands.
+    final cash =
+        await tx.query('ledger', where: "ref_id = ? AND type = 'payment'", whereArgs: [docId]);
+    if (cash.isEmpty) {
+      if (paid > 0) {
+        await tx.insert('ledger', {
+          'id': uid(),
+          'no': await _nextNo(tx, 'ledger', "type = 'payment'"),
+          'customer_id': d.customerId,
+          'type': 'payment',
+          'amount': -paid,
+          'ref_id': docId,
+          'note': '',
+          'created_at': d.createdAt,
+        });
+      }
+    } else if (paid > 0) {
+      await tx.update('ledger', {'amount': -paid},
+          where: 'id = ?', whereArgs: [cash.first['id']]);
+    } else {
+      await tx.delete('ledger', where: 'id = ?', whereArgs: [cash.first['id']]);
+    }
+  });
 }
 
 /// Cancels a sale or quotation.
