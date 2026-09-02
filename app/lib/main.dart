@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'core.dart';
 import 'db.dart';
+import 'files.dart';
 import 'models.dart';
 import 'screens/buy.dart';
 import 'screens/customers.dart';
@@ -30,6 +33,15 @@ class _BootState extends State<Boot> {
     await openDb();
     await s.loadSettings();
     locale.value = s.settings['language'] ?? 'en';
+
+    // The app takes its own copy once a day, unasked. Deliberately not awaited
+    // and deliberately swallowed: a backup must never hold up the counter, and
+    // storage refusing must never be the reason the shop cannot open its books.
+    unawaited(() async {
+      try {
+        await autoBackup();
+      } catch (_) {}
+    }());
   }
 
   @override
@@ -87,10 +99,13 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  late Future<(Stats, List<Customer>)> _data = _load();
+typedef Late = ({Customer customer, int overdue, int days});
 
-  Future<(Stats, List<Customer>)> _load() async => (await s.stats(), await s.debtors());
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  late Future<(Stats, List<Customer>, List<Late>)> _data = _load();
+
+  Future<(Stats, List<Customer>, List<Late>)> _load() async =>
+      (await s.stats(), await s.debtors(), await s.overdue());
 
   @override
   void initState() {
@@ -134,6 +149,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             builder: (_, snap) {
               final stats = snap.data?.$1;
               final debtors = snap.data?.$2 ?? const <Customer>[];
+              final late = snap.data?.$3 ?? const <Late>[];
               return ListView(
                 padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
                 children: [
@@ -195,15 +211,50 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ]),
                   const SizedBox(height: 20),
 
+                  // Who owes the most and who is late are not the same list,
+                  // and it is this one that decides who gets a call today.
+                  if (late.isNotEmpty) ...[
+                    Row(children: [
+                      const Icon(Icons.alarm, size: 16, color: C.owe),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(t('PAST THE DATE'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11,
+                                letterSpacing: 1.6,
+                                fontWeight: FontWeight.w700,
+                                color: C.owe)),
+                      ),
+                      Text(money(late.fold(0, (a, x) => a + x.overdue)),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: C.owe,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          )),
+                    ]),
+                    const SizedBox(height: 6),
+                    for (final x in late.take(5))
+                      _LateRow(x, onTap: () => _go(CustomerScreen(x.customer.id))),
+                    const SizedBox(height: 20),
+                  ],
+
                   if (debtors.isNotEmpty) ...[
                     Row(children: [
-                      Text(t('WHO OWES YOU'),
-                          style: const TextStyle(
-                              fontSize: 11,
-                              letterSpacing: 1.6,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.black45)),
-                      const Spacer(),
+                      // Expanded, not a Spacer: the Tamil heading plus its
+                      // letter spacing is wider than a small phone.
+                      Expanded(
+                        child: Text(t('WHO OWES YOU'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11,
+                                letterSpacing: 1.6,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.black45)),
+                      ),
                       TextButton(
                         onPressed: () => _go(const CustomersScreen()),
                         child: Text(t('All')),
@@ -438,6 +489,51 @@ class _DebtorRow extends StatelessWidget {
                         const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               ),
               Text(money(c.balance),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: C.owe,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  )),
+            ]),
+          ),
+        ),
+      );
+}
+
+/// A customer with a bill past its date. The days are the point: "14 days" is
+/// what turns a name into a phone call.
+class _LateRow extends StatelessWidget {
+  final Late x;
+  final VoidCallback onTap;
+  const _LateRow(this.x, {required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(children: [
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(x.customer.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
+                      Text(
+                          '${x.days} ${t(x.days == 1 ? 'day late' : 'days late')}',
+                          style: const TextStyle(fontSize: 13, color: C.owe)),
+                    ]),
+              ),
+              const SizedBox(width: 8),
+              Text(money(x.overdue),
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,

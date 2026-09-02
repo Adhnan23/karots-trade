@@ -20,11 +20,13 @@ class ProductsScreen extends StatefulWidget {
 class _ProductsScreenState extends State<ProductsScreen> {
   String _q = '';
   late Future<List<Product>> _list = s.products();
+  late Future<({int items, int cost, int retail})> _value = s.stockValue();
 
   void _reload() {
     if (!mounted) return;
     setState(() {
       _list = s.products(q: _q);
+      _value = s.stockValue();
     });
   }
 
@@ -60,8 +62,11 @@ class _ProductsScreenState extends State<ProductsScreen> {
           },
         ),
         body: Column(children: [
+          // Not while picking a product for a sale: that is the middle of a
+          // transaction, and what the shelf is worth is nobody's business then.
+          if (!widget.picking) _StockValue(_value),
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
             child: TextField(
               decoration: InputDecoration(
                   hintText: t('Search'), prefixIcon: const Icon(Icons.search)),
@@ -303,6 +308,7 @@ class _ProductFormState extends State<ProductForm> {
   late final _name = TextEditingController(text: widget.product?.name ?? '');
   late Uint8List? _image = widget.product?.image;
   bool _imageChanged = false;
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -348,16 +354,22 @@ class _ProductFormState extends State<ProductForm> {
             style: FilledButton.styleFrom(backgroundColor: C.products),
             icon: const Icon(Icons.check),
             label: Text(t('Save')),
-            onPressed: () async {
-              final id = await guard(
-                  context,
-                  () => s.saveProduct(
-                        id: widget.product?.id,
-                        name: _name.text,
-                        image: _imageChanged ? _image : null,
-                      ));
-              if (id != null && context.mounted) Navigator.pop(context, id);
-            },
+            onPressed: _saving
+                ? null
+                : () async {
+                    if (_saving) return;
+                    setState(() => _saving = true);
+                    final id = await guard(
+                        context,
+                        () => s.saveProduct(
+                              id: widget.product?.id,
+                              name: _name.text,
+                              image: _imageChanged ? _image : null,
+                            ));
+                    if (!context.mounted) return;
+                    setState(() => _saving = false);
+                    if (id != null) Navigator.pop(context, id);
+                  },
           ),
         ]),
       );
@@ -566,4 +578,75 @@ class _FixBatchScreenState extends State<FixBatchScreen> {
       ]),
     );
   }
+}
+
+/// What is on the shelf, and what it is worth — the question a shopkeeper asks
+/// about once a month and has no way of answering by counting.
+///
+/// Two figures, because they answer different things: what the stock cost to
+/// buy is money already spent and sitting there, and what it will sell for is
+/// what it turns back into.
+class _StockValue extends StatelessWidget {
+  final Future<({int items, int cost, int retail})> value;
+  const _StockValue(this.value);
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder(
+        future: value,
+        builder: (_, snap) {
+          final v = snap.data;
+          if (v == null || v.items == 0) return const SizedBox.shrink();
+          return Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+            decoration: BoxDecoration(
+                color: C.products.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(18)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${t('Stock on hand')}  ·  ${v.items}',
+                  style: const TextStyle(fontSize: 13, color: Colors.black54)),
+              const SizedBox(height: 6),
+              Row(children: [
+                Expanded(child: _Figure(t('What it cost'), v.cost, Colors.black87)),
+                Expanded(child: _Figure(t('What it sells for'), v.retail, C.sell)),
+              ]),
+            ]),
+          );
+        },
+      );
+}
+
+class _Figure extends StatelessWidget {
+  final String label;
+  final int amount;
+  final Color color;
+  const _Figure(this.label, this.amount, this.color);
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(money(amount),
+                maxLines: 1,
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: color,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                )),
+          ),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(label,
+                maxLines: 1,
+                softWrap: false,
+                style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          ),
+        ],
+      );
 }

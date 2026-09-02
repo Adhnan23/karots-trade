@@ -20,7 +20,7 @@ Future<Database> openDb({String? path}) async {
   _db = await databaseFactory.openDatabase(
     file,
     options: OpenDatabaseOptions(
-      version: 6,
+      version: 7,
       onConfigure: (d) => d.execute('PRAGMA foreign_keys = ON'),
       onCreate: (d, _) async {
         for (final s in schema) {
@@ -59,6 +59,7 @@ const tables = [
   'customers',
   'docs',
   'doc_items',
+  'doc_edits',
   'returns',
   'return_items',
   'ledger',
@@ -138,6 +139,7 @@ const schema = [
       list_price INTEGER NOT NULL DEFAULT 0,
       returned INTEGER NOT NULL DEFAULT 0)''',
   'CREATE INDEX ix_items_doc ON doc_items(doc_id)',
+  ..._docEdits,
   '''CREATE TABLE returns(
       id TEXT PRIMARY KEY,
       no INTEGER NOT NULL,
@@ -188,6 +190,20 @@ const schema = [
   'CREATE INDEX ix_adj_product ON adjustments(product_id)',
   ..._cheques,
   'CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+];
+
+/// What a bill said before it was corrected. Editing a sale rewrites its lines,
+/// and a customer holding the earlier printout deserves an answer better than
+/// "it must have been wrong" — so the old version is kept as it stood.
+const _docEdits = [
+  '''CREATE TABLE doc_edits(
+      id TEXT PRIMARY KEY,
+      doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+      total_before INTEGER NOT NULL,
+      paid_before INTEGER NOT NULL,
+      lines TEXT NOT NULL,              -- the old lines, as JSON
+      created_at INTEGER NOT NULL)''',
+  'CREATE INDEX ix_edits_doc ON doc_edits(doc_id)',
 ];
 
 /// A cheque credits the account the moment it is handed over — that is what
@@ -261,4 +277,7 @@ const migrations = <int, List<String>>{
     "UPDATE ledger SET method = 'cheque' "
         "WHERE type = 'payment' AND ref_id IN (SELECT id FROM cheques)",
   ],
+  // A new table only. Bills corrected before today have no earlier version
+  // recorded, which is simply what it is — from here on they do.
+  7: _docEdits,
 };

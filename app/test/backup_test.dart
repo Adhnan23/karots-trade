@@ -41,10 +41,16 @@ Future<void> seed() async {
       productId: cola, batchId: b.id, name: 'Coca-Cola 1L', price: b.price, qty: qty);
 
   // A paid-in-part sale, a quotation, a converted quotation, a cancelled sale,
-  // an advance, a return and a stock correction.
+  // an advance, a return, a corrected bill and a stock correction.
   final sale = await saveDoc(
       customerId: abc, quote: false, lines: [line(colaBatches[0], 10)], paid: rs(1000));
   await recordPayment(abc, rs(500));
+
+  // Written wrong, then put right — so the earlier version travels too.
+  final fixed = await saveDoc(
+      customerId: abc, quote: false, lines: [line(colaBatches[0], 4)]);
+  await editDoc(fixed, lines: [line(colaBatches[0], 3)]);
+
   await saveReturn(sale, {(await docItems(sale)).first.id: 2});
 
   final quote =

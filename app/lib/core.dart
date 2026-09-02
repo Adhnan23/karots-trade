@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // ---------------------------------------------------------------- money
 // All money is stored as integer cents. Never use double for money.
@@ -406,6 +407,56 @@ const _ta = <String, String>{
   'This file has no products in it': 'இந்தக் கோப்பில் பொருட்கள் இல்லை',
   'This is a products file. Use Import products instead':
       'இது பொருட்கள் கோப்பு. "பொருட்களை மீட்டெடு" பயன்படுத்தவும்',
+
+  // Giving cash back
+  'Give money back': 'பணம் திரும்பத் தர',
+  'Give back all': 'முழுவதும் திரும்பத் தர',
+  'After giving it back': 'திரும்பத் தந்த பின்',
+  'Date given': 'தந்த தேதி',
+  'Cash given back': 'பணம் திரும்பத் தந்தது',
+  'Could not open the dialler': 'அழைப்புத் திரையைத் திறக்க முடியவில்லை',
+
+  // Late payers
+  'PAST THE DATE': 'தேதி முடிந்தவை',
+  'day late': 'நாள் தாமதம்',
+  'days late': 'நாட்கள் தாமதம்',
+  'Already owes': 'ஏற்கனவே தர வேண்டியது',
+  'is past the date': 'தேதி முடிந்தது',
+  'Expired': 'காலாவதி',
+
+  // What the day came to
+  'sales': 'விற்பனைகள்',
+  'returns': 'திரும்பியவை',
+  'cheques': 'காசோலைகள்',
+  'purchases': 'கொள்முதல்கள்',
+  'Sold': 'விற்றது',
+  'Still to come in': 'இன்னும் வர வேண்டியது',
+  'Credited back': 'திரும்ப வரவு',
+  'Cheque value': 'காசோலைத் தொகை',
+  'Total cost': 'மொத்தச் செலவு',
+
+  // What the shelf is worth
+  'Stock on hand': 'இருப்பில் உள்ளது',
+  'What it cost': 'கொள்விலை மதிப்பு',
+  'What it sells for': 'விற்பனை மதிப்பு',
+
+  // Keeping a copy
+  'The app keeps its own copy': 'செயலி தானே ஒரு நகல் வைக்கிறது',
+  'Taken by itself on': 'தானாக எடுத்தது',
+  'Tap to put this copy back.': 'இந்த நகலைத் திரும்பப் பெற தட்டவும்.',
+  'Replace everything with the automatic copy?':
+      'தானியங்கு நகலால் அனைத்தையும் மாற்றவா?',
+  'There is no automatic backup yet': 'தானியங்கு நகல் இதுவரை இல்லை',
+  'You have never saved a copy off this phone.':
+      'இந்த தொலைபேசிக்கு வெளியே நகல் எடுக்கவே இல்லை.',
+  'Last saved off this phone': 'கடைசியாக வெளியே சேமித்தது',
+  'day ago': 'நாள் முன்பு',
+  'days ago': 'நாட்கள் முன்பு',
+  'If this phone is lost, so is everything in it.':
+      'தொலைபேசி தொலைந்தால் அனைத்தும் தொலையும்.',
+
+  // What a corrected bill used to say
+  'Before this it said': 'இதற்கு முன் இருந்தது',
 };
 
 // ---------------------------------------------------------------- colours
@@ -464,8 +515,10 @@ class EmptyState extends StatelessWidget {
   final String title, hint;
   const EmptyState(this.icon, this.title, this.hint, {super.key});
 
+  // Scrollable, because an empty state is drawn in whatever room is left over
+  // and on a small phone in Tamil there is sometimes not enough of it.
   @override
-  Widget build(BuildContext context) => Center(
+  Widget build(BuildContext context) => SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
@@ -533,6 +586,15 @@ Future<T?> guard<T>(BuildContext c, Future<T> Function() f) async {
     }
     return null;
   }
+}
+
+/// Hands a number to the phone's dialler. Nothing is dialled by the app — the
+/// call is placed by the person, in their own dialler, as it should be.
+Future<void> call(BuildContext c, String phone) async {
+  final number = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+  if (number.isEmpty) return;
+  final ok = await launchUrl(Uri(scheme: 'tel', path: number));
+  if (!ok && c.mounted) toast(c, t('Could not open the dialler'), bad: true);
 }
 
 /// Balance label that never leaves the user guessing which way the money goes.

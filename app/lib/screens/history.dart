@@ -179,6 +179,52 @@ class _HistoryScreenState extends State<HistoryScreen> {
       );
 }
 
+/// What the list below comes to for the range that is filtered.
+///
+/// Every tab already had the right rows and the right dates; what it did not
+/// have was the sum. A shopkeeper closing the day should not be adding up a
+/// screen with his finger.
+class Totals extends StatelessWidget {
+  final String label;
+  final int count;
+  final List<(String, int, Color)> amounts;
+  const Totals(this.label, this.count, this.amounts, {super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+        decoration: BoxDecoration(
+            color: Colors.white, borderRadius: BorderRadius.circular(16)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('$count ${t(label)}',
+              style: const TextStyle(fontSize: 13, color: Colors.black54)),
+          const SizedBox(height: 4),
+          for (final (name, amount, color) in amounts)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Flexible(
+                  child: Text(t(name),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 15)),
+                ),
+                const SizedBox(width: 8),
+                Text(money(amount),
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: color,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    )),
+              ]),
+            ),
+        ]),
+      );
+}
+
 // ---------------------------------------------------------------- sales & quotes
 
 class DocList extends StatefulWidget {
@@ -250,11 +296,25 @@ class _DocListState extends State<DocList> {
                 return EmptyState(Icons.receipt_long, 'Nothing here yet',
                     'Sales and quotes show up here.');
               }
-              return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                itemCount: docs.length,
-                itemBuilder: (_, i) => DocTile(docs[i], onChanged: _reload),
-              );
+              // Quotations are not money and a cancelled sale never was, so
+              // neither goes into the day's figure.
+              final real = docs.where((d) => !d.isQuote && !d.isCancelled);
+              final sold = real.fold(0, (a, d) => a + d.total);
+              final unpaid = real.fold(0, (a, d) => a + d.due);
+              return Column(children: [
+                if (sold > 0)
+                  Totals('sales', real.length, [
+                    ('Sold', sold, C.sell),
+                    if (unpaid > 0) ('Still to come in', unpaid, C.owe),
+                  ]),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    itemCount: docs.length,
+                    itemBuilder: (_, i) => DocTile(docs[i], onChanged: _reload),
+                  ),
+                ),
+              ]);
             },
           ),
         ),
@@ -308,6 +368,9 @@ class StatusChip extends StatelessWidget {
     final (label, color) = switch (d) {
       _ when d.isCancelled => ('Cancelled', Colors.grey),
       _ when d.isQuote && d.isConverted => ('Converted to sale', C.buy),
+      // A month-old quotation is not an offer any more, and saying "Waiting"
+      // invites a customer to hold you to last month's price.
+      _ when d.isQuote && quoteExpired(d.createdAt) => ('Expired', Colors.grey),
       _ when d.isQuote => ('Waiting', C.quote),
       _ when d.due <= 0 => ('Paid', C.buy),
       _ when d.settled > 0 => ('Part paid', C.sell),
@@ -337,17 +400,21 @@ class DocScreen extends StatefulWidget {
   State<DocScreen> createState() => _DocScreenState();
 }
 
+typedef _Edit = ({int at, int total, int paid, List<(String, int, int)> lines});
+
 class _DocScreenState extends State<DocScreen> {
-  late Future<(Doc?, List<DocItem>, int)> _data = _load();
+  late Future<(Doc?, List<DocItem>, int, List<_Edit>)> _data = _load();
 
   /// The customer's whole balance comes along, so a bill can tell them what
-  /// they owe altogether and not just for this one sale.
-  Future<(Doc?, List<DocItem>, int)> _load() async {
+  /// they owe altogether and not just for this one sale. So does every earlier
+  /// version of the bill, for when someone turns up holding one.
+  Future<(Doc?, List<DocItem>, int, List<_Edit>)> _load() async {
     final d = await s.doc(widget.id);
     return (
       d,
       await s.docItems(widget.id),
       d == null ? 0 : await s.balance(d.customerId),
+      await s.docEdits(widget.id),
     );
   }
 
@@ -391,7 +458,7 @@ class _DocScreenState extends State<DocScreen> {
           if (!snap.hasData) {
             return const Scaffold(body: Center(child: CircularProgressIndicator()));
           }
-          final (d, items, owing) = snap.data!;
+          final (d, items, owing, edits) = snap.data!;
           if (d == null) {
             return Scaffold(appBar: AppBar(), body: Center(child: Text(t('Not found'))));
           }
@@ -445,6 +512,32 @@ class _DocScreenState extends State<DocScreen> {
                   padding: const EdgeInsets.only(top: 6),
                   child: Text('${t('Corrected on')} ${when(d.editedAt!)}',
                       style: const TextStyle(fontSize: 13, color: Colors.black54)),
+                ),
+              // What it said before. A customer holding the earlier printout
+              // gets a straight answer instead of a shrug.
+              for (final e in edits)
+                Card(
+                  margin: const EdgeInsets.only(top: 8),
+                  color: const Color(0xFFF3F4F6),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${t('Before this it said')}  ·  ${when(e.at)}',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.black54)),
+                          const SizedBox(height: 4),
+                          for (final (name, qty, price) in e.lines)
+                            Text('$name   ·   $qty × ${money(price)}',
+                                style: const TextStyle(fontSize: 13)),
+                          Text('${t('Total')} ${money(e.total)}',
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w700)),
+                        ]),
+                  ),
                 ),
               const SizedBox(height: 14),
               for (final i in items)
@@ -782,9 +875,18 @@ class _ReturnsListState extends State<ReturnsList> {
             return EmptyState(Icons.assignment_return, 'Nothing here yet',
                 'Returned items show up here.');
           }
-          return ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: rows.length,
+          return Column(children: [
+            Totals('returns', rows.length, [
+              (
+                'Credited back',
+                rows.fold(0, (a, r) => a + (r['total'] as int)),
+                C.ret
+              ),
+            ]),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                itemCount: rows.length,
             itemBuilder: (_, i) {
               final r = rows[i];
               return Card(
@@ -802,8 +904,10 @@ class _ReturnsListState extends State<ReturnsList> {
                   onTap: () => showReturnReceipt(context, r['id'] as String),
                 ),
               );
-            },
-          );
+                },
+              ),
+            ),
+          ]);
         },
       );
 }

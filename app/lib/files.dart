@@ -307,16 +307,45 @@ class ReceiptScreen extends StatelessWidget {
 
 // ============================================================ backup
 
-/// Everything, including product photos (base64) — a backup that restores
-/// products without their images is not a backup.
+/// One row on its way into a backup: photos ride along as base64, because a
+/// backup that restores products without their images is not a backup.
+Map<String, Object?> _row(Map<String, Object?> r) =>
+    r.map((k, v) => MapEntry(k, v is Uint8List ? {'b64': base64Encode(v)} : v));
+
+/// Everything, as bytes — for the share dialog, which wants the file in hand.
 Future<Uint8List> exportBackup() async {
   final data = <String, Object?>{'version': 2, 'at': DateTime.now().toIso8601String()};
   for (final table in tables) {
-    data[table] = (await db.query(table))
-        .map((r) => r.map((k, v) => MapEntry(k, v is Uint8List ? {'b64': base64Encode(v)} : v)))
-        .toList();
+    data[table] = (await db.query(table)).map(_row).toList();
   }
   return Uint8List.fromList(utf8.encode(jsonEncode(data)));
+}
+
+/// The same backup, written straight to [file] one row at a time.
+///
+/// A shop with a few hundred photographed products makes a file of tens of
+/// megabytes, and [exportBackup] holds all of it in memory twice over — once as
+/// a string and once as bytes. That is survivable when someone is standing
+/// there watching; it is not what should run unattended in the background, so
+/// the automatic copy streams instead and never holds more than one table.
+Future<void> writeBackup(File file) async {
+  final sink = file.openWrite();
+  try {
+    sink.write('{"version":2,"at":${jsonEncode(DateTime.now().toIso8601String())}');
+    for (final table in tables) {
+      sink.write(',${jsonEncode(table)}:[');
+      var first = true;
+      for (final r in await db.query(table)) {
+        if (!first) sink.write(',');
+        first = false;
+        sink.write(jsonEncode(_row(r)));
+      }
+      sink.write(']');
+    }
+    sink.write('}');
+  } finally {
+    await sink.close();
+  }
 }
 
 /// Opens the system "save as" dialog (SAF on Android) so the user picks where
@@ -326,7 +355,52 @@ Future<bool> saveBackup() async {
   final name = 'karots-backup-${DateTime.now().toIso8601String().substring(0, 10)}.json';
   final uri = await FilePicker.saveFile(
       fileName: name, bytes: bytes, mimeType: 'application/json');
+  // Remembered so Settings can say how long it has been. A copy inside the
+  // phone is no use at all when the phone is what went missing.
+  if (uri != null) {
+    await s.setSetting('last_export_at', '${DateTime.now().millisecondsSinceEpoch}');
+  }
   return uri != null;
+}
+
+// ---------------------------------------------------------------- automatic copy
+
+/// The app's own backup, taken without being asked.
+///
+/// Everything this shop knows lives in one file on one phone, and the only
+/// copy used to be the one the owner remembered to make. This one happens by
+/// itself, once a day, inside the app's private storage — so a bad import, a
+/// mistaken wipe or a fumbled restore always has a way back. It is not a
+/// substitute for saving a copy off the phone, which is why Settings says how
+/// long it has been since that was last done.
+Future<File> _autoBackupFile() async => File(p.join(
+    (await getApplicationDocumentsDirectory()).path, 'karots-auto-backup.json'));
+
+Future<DateTime?> lastAutoBackup() async {
+  final f = await _autoBackupFile();
+  return await f.exists() ? f.lastModified() : null;
+}
+
+/// Takes a copy if the last one is older than [every]. Cheap enough to call on
+/// every start: on all but one start a day it does nothing but a file stat.
+Future<void> autoBackup({Duration every = const Duration(days: 1)}) async {
+  final f = await _autoBackupFile();
+  if (await f.exists() &&
+      DateTime.now().difference(await f.lastModified()) < every) {
+    return;
+  }
+  // Written beside the real one and moved into place, so a copy interrupted
+  // half way through never replaces a good one.
+  final tmp = File('${f.path}.part');
+  await writeBackup(tmp);
+  await tmp.rename(f.path);
+}
+
+/// Puts back the automatic copy, keeping the usual way back from that too.
+Future<void> restoreAutoBackup() async {
+  final f = await _autoBackupFile();
+  if (!await f.exists()) throw Exception('There is no automatic backup yet');
+  await importBackupSafely(await f.readAsBytes());
 }
 
 // ---------------------------------------------------------------- products only
@@ -448,7 +522,7 @@ Future<File> _rollbackFile() async =>
 /// Takes the safety copy first, then imports. If the import throws, the
 /// database is untouched and the copy is simply a spare.
 Future<void> importBackupSafely(Uint8List bytes) async {
-  await (await _rollbackFile()).writeAsBytes(await exportBackup(), flush: true);
+  await writeBackup(await _rollbackFile());
   await importBackup(bytes);
 }
 

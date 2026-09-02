@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:karots_trade/db.dart';
 import 'package:karots_trade/main.dart';
+import 'package:karots_trade/screens/customers.dart';
 import 'package:karots_trade/screens/products.dart';
 import 'package:karots_trade/store.dart' as s;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
@@ -42,6 +43,33 @@ void main() {
       await settle(tester);
 
       expect(find.text('Coca-Cola 1L'), findsOneWidget);
+    });
+  });
+
+  testWidgets('two taps on Save are still one payment', (tester) async {
+    await phone(tester);
+    await tester.runAsync(() async {
+      final cid = await s.saveCustomer(name: 'ABC Shop');
+      await s.adjustBalance(cid, 100000, note: 'Old debt', opening: true);
+      final c = (await s.customer(cid))!;
+
+      await tester.pumpWidget(MaterialApp(home: PaymentScreen(c)));
+      await settle(tester);
+
+      await tester.enterText(find.byType(TextField).first, '500');
+      await settle(tester);
+
+      // A fumbled double tap, both landing before the button can be rebuilt
+      // as disabled. Money must not come off the account twice.
+      final save = find.widgetWithText(FilledButton, 'Save');
+      await tester.tap(save, warnIfMissed: false);
+      await tester.tap(save, warnIfMissed: false);
+      await settle(tester);
+
+      final payments =
+          (await s.ledger(cid)).where((e) => e.isPayment).toList();
+      expect(payments, hasLength(1), reason: 'one tap, one payment');
+      expect(await s.balance(cid), 50000);
     });
   });
 

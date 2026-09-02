@@ -54,10 +54,22 @@ class _SellScreenState extends State<SellScreen> {
     super.dispose();
   }
 
+  /// What this customer already owes, and how much of it is late. More goods
+  /// should not go out on credit without that on screen first.
+  late Future<({List<Doc> bills, int overdue, int total})?> _owing = _owed();
+
+  Future<({List<Doc> bills, int overdue, int total})?> _owed() async =>
+      _customer == null ? null : s.outstanding(_customer!.id);
+
   Future<void> _pickCustomer() async {
     final c = await Navigator.push<Customer>(context,
         MaterialPageRoute(builder: (_) => const CustomersScreen(picking: true)));
-    if (c != null) setState(() => _customer = c);
+    if (c != null) {
+      setState(() {
+        _customer = c;
+        _owing = _owed();
+      });
+    }
   }
 
   Future<void> _addItem() async {
@@ -174,6 +186,40 @@ class _SellScreenState extends State<SellScreen> {
               onTap: _editing ? null : _pickCustomer,
             ),
           ),
+        ),
+        // Said before the goods go out, not after. A customer with three late
+        // bills is a decision, and the decision belongs to the seller.
+        FutureBuilder(
+          future: _owing,
+          builder: (_, snap) {
+            final o = snap.data;
+            if (o == null || o.total <= 0) return const SizedBox.shrink();
+            final late = o.overdue > 0;
+            return Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: (late ? C.owe : C.quote).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14)),
+              child: Row(children: [
+                Icon(late ? Icons.warning_amber : Icons.info_outline,
+                    color: late ? C.owe : C.quote),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                      [
+                        '${t('Already owes')} ${money(o.total)}',
+                        if (late) '${money(o.overdue)} ${t('is past the date')}',
+                      ].join('\n'),
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: late ? C.owe : Colors.black87)),
+                ),
+              ]),
+            );
+          },
         ),
         Expanded(
           child: _lines.isEmpty

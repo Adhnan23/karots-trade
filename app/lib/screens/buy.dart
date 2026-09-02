@@ -5,7 +5,7 @@ import '../files.dart';
 import '../models.dart';
 import '../photo.dart';
 import '../store.dart' as s;
-import 'history.dart' show Filters;
+import 'history.dart' show Filters, Totals;
 import 'products.dart';
 
 class BuyScreen extends StatefulWidget {
@@ -266,8 +266,13 @@ class _PurchasesListState extends State<PurchasesList> {
             return EmptyState(
                 Icons.add_shopping_cart, 'Nothing here yet', 'Purchases show up here.');
           }
-          return ListView.builder(
-            padding: const EdgeInsets.all(12),
+          return Column(children: [
+            Totals('purchases', rows.length, [
+              ('Total cost', rows.fold(0, (a, r) => a + (r['total'] as int)), C.buy),
+            ]),
+            Expanded(
+                child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             itemCount: rows.length,
             itemBuilder: (_, i) {
               final r = rows[i];
@@ -285,7 +290,8 @@ class _PurchasesListState extends State<PurchasesList> {
                 ),
               );
             },
-          );
+          )),
+          ]);
         },
       );
 }

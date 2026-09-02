@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -85,6 +86,58 @@ void main() {
     await realShop();
     expect(await lastImportUndoPoint(), isNull);
     expect(() => undoLastImport(), throwsA(isA<Exception>()));
+  });
+
+  group('the copy the app takes by itself', () {
+    test('it happens without being asked, and can be put back', () async {
+      await realShop();
+      final mine = await shape();
+
+      expect(await lastAutoBackup(), isNull, reason: 'nothing yet');
+      await autoBackup();
+      expect(await lastAutoBackup(), isNotNull);
+
+      // Everything goes wrong: the books are replaced with someone else's.
+      await closeDb();
+      await openDb(path: inMemoryDatabasePath);
+      await saveCustomer(name: 'Not my shop');
+      expect(await products(), isEmpty);
+
+      await restoreAutoBackup();
+      expect(await shape(), mine, reason: 'every row came back');
+    });
+
+    test('it does not take a second copy the same day', () async {
+      await realShop();
+      await autoBackup();
+      final first = await lastAutoBackup();
+
+      await saveCustomer(name: 'Added after the copy');
+      await autoBackup();
+
+      expect(await lastAutoBackup(), first, reason: 'the file was left alone');
+
+      // Until enough time has passed, which is what the next start would see.
+      await autoBackup(every: Duration.zero);
+      expect(await lastAutoBackup(), isNot(first));
+    });
+
+    test('there is nothing to put back before the first copy', () async {
+      await realShop();
+      expect(() => restoreAutoBackup(), throwsA(isA<Exception>()));
+    });
+
+    test('the streamed file says exactly what the in-memory one says',
+        () async {
+      await realShop();
+      final f = File('${tmp.path}/streamed.json');
+      await writeBackup(f);
+
+      // Same format, byte for byte, apart from the timestamp inside it.
+      String strip(String s) => s.replaceAll(RegExp(r'"at":"[^"]*"'), '"at":""');
+      expect(strip(await f.readAsString()),
+          strip(utf8.decode(await exportBackup())));
+    });
   });
 
   test('a broken file leaves the books alone and takes no undo point',

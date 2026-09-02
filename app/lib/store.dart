@@ -391,6 +391,34 @@ Future<String> recordPayment(String customerId, int amount,
   return id;
 }
 
+/// Money handed back to a customer — the other direction from [recordPayment].
+///
+/// Goods coming back credit the account, which is right when the customer keeps
+/// trading with you. When they want the cash instead, the money really does
+/// leave the till, and the account has to stop showing an advance that is no
+/// longer sitting there.
+Future<String> payOut(String customerId, int amount,
+    {String note = '', String method = '', int? at}) async {
+  if (amount <= 0) throw Exception('Payment must be more than zero');
+  final id = uid();
+  await db.transaction((tx) async {
+    await tx.insert('ledger', {
+      'id': id,
+      'no': await _nextNo(tx, 'ledger', "type = 'refund'"),
+      'customer_id': customerId,
+      'type': 'refund',
+      // Positive, the same way a sale is: it is the customer owing more, or an
+      // advance they no longer have.
+      'amount': amount,
+      'ref_id': null,
+      'note': note.trim(),
+      'method': method,
+      'created_at': at ?? _now(),
+    });
+  });
+  return id;
+}
+
 /// A correction made by hand, and the one way a balance moves without a sale
 /// or a payment behind it.
 ///
@@ -642,8 +670,10 @@ Future<Cheque?> oneCheque(String id) async {
 ///
 /// Credits are payments and returns, netted against undone payments: a reversal
 /// is positive, so it cancels its payment inside the same sum and the bill it
-/// had cleared goes back to unpaid on its own. A hand-written adjustment that
-/// lets the customer off counts as a credit for the same reason.
+/// had cleared goes back to unpaid on its own. Cash handed back nets off the
+/// same way, and for the same reason — money that left the till again was never
+/// available to settle anything. A hand-written adjustment that lets the
+/// customer off counts as a credit too.
 ///
 /// Debts owed before this bill queue in front of it: earlier sales, and any
 /// balance carried in or added by hand up to that point. Without that, money
@@ -654,7 +684,7 @@ const _settled = '''
       MAX(0, MIN(d.total,
         IFNULL((SELECT -SUM(l.amount) FROM ledger l
                  WHERE l.customer_id = d.customer_id
-                   AND (l.type IN ('payment', 'return', 'payment_cancelled')
+                   AND (l.type IN ('payment', 'return', 'payment_cancelled', 'refund')
                         OR (l.type IN ('opening', 'adjustment') AND l.amount < 0))), 0)
         - IFNULL((SELECT SUM(e.total) FROM docs e
                    WHERE e.customer_id = d.customer_id AND e.kind = 'sale'
@@ -918,6 +948,20 @@ Future<void> editDoc(String docId,
       throw Exception('Items came back from this sale, so cancel it instead');
     }
 
+    // What it said before, kept before it stops being true. A customer with the
+    // earlier printout in their hand is owed a straight answer.
+    await tx.insert('doc_edits', {
+      'id': uid(),
+      'doc_id': docId,
+      'total_before': d.total,
+      'paid_before': d.paid,
+      'lines': jsonEncode([
+        for (final i in old)
+          {'name': i.name, 'qty': i.qty, 'price': i.price}
+      ]),
+      'created_at': _now(),
+    });
+
     for (final i in old) {
       await tx.rawUpdate(
           'UPDATE batches SET qty_left = qty_left + ? WHERE id = ?', [i.qty, i.batchId]);
@@ -986,6 +1030,26 @@ Future<void> editDoc(String docId,
     }
   });
 }
+
+/// Every earlier version of a bill, newest first, each with the lines it had.
+Future<List<({int at, int total, int paid, List<(String, int, int)> lines})>>
+    docEdits(String docId) async =>
+        (await db.query('doc_edits',
+                where: 'doc_id = ?', whereArgs: [docId], orderBy: 'created_at DESC'))
+            .map((r) => (
+                  at: (r['created_at'] as num).toInt(),
+                  total: (r['total_before'] as num).toInt(),
+                  paid: (r['paid_before'] as num).toInt(),
+                  lines: [
+                    for (final l in jsonDecode(r['lines'] as String) as List)
+                      (
+                        (l as Map)['name'] as String,
+                        (l['qty'] as num).toInt(),
+                        (l['price'] as num).toInt()
+                      )
+                  ],
+                ))
+            .toList();
 
 /// Cancels a sale or quotation.
 ///
@@ -1197,6 +1261,55 @@ Future<List<Customer>> debtors({int limit = 5}) async => (await db.rawQuery('''
       ORDER BY balance DESC LIMIT ?''', [limit]))
     .map(Customer.fromRow)
     .toList();
+
+/// What the stock on the shelf is worth, both ways round: what it cost to buy,
+/// and what it will bring in if it all sells at today's price.
+///
+/// The two answer different questions — the first is money already spent and
+/// sitting there, the second is what it turns back into — and a shopkeeper
+/// asking "what is my stock worth" usually wants both in front of them.
+Future<({int items, int cost, int retail})> stockValue() async {
+  final r = (await db.rawQuery('''
+      SELECT IFNULL(SUM(qty_left),0) n,
+             IFNULL(SUM(qty_left * cost),0) c,
+             IFNULL(SUM(qty_left * price),0) p
+      FROM batches WHERE qty_left > 0'''))
+      .first;
+  return (
+    items: (r['n'] as num).toInt(),
+    cost: (r['c'] as num).toInt(),
+    retail: (r['p'] as num).toInt(),
+  );
+}
+
+/// Customers with a bill past its date, the most overdue first, each with how
+/// much of their balance is late and how many days the oldest one has run.
+///
+/// Who owes the most and who is worst overdue are different lists, and it is
+/// the second one that decides who gets a phone call this morning.
+Future<List<({Customer customer, int overdue, int days})>> overdue() async {
+  final now = DateTime.now();
+  final cut = now.subtract(const Duration(days: creditDays)).millisecondsSinceEpoch;
+  final rows = await db.rawQuery('''
+      SELECT x.customer_id cid, SUM(x.total - x.settled) late,
+             MIN(x.created_at) oldest
+      FROM (SELECT d.*, $_settled FROM docs d
+            WHERE d.kind = 'sale' AND d.status <> 'cancelled') x
+      WHERE x.total - x.settled > 0 AND x.created_at < ?
+      GROUP BY x.customer_id ORDER BY late DESC''', [cut]);
+
+  final out = <({Customer customer, int overdue, int days})>[];
+  for (final r in rows) {
+    final c = await customer(r['cid'] as String);
+    if (c == null) continue;
+    out.add((
+      customer: c,
+      overdue: (r['late'] as num).toInt(),
+      days: now.difference(payBy((r['oldest'] as num).toInt())).inDays,
+    ));
+  }
+  return out;
+}
 
 Future<({int products, int stock, int customers, int owed, int cheques, int sales})>
     stats() async {

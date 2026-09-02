@@ -4,7 +4,7 @@ import '../core.dart';
 import '../files.dart';
 import '../models.dart';
 import '../store.dart' as s;
-import 'history.dart' show Filters;
+import 'history.dart' show Filters, Totals;
 
 /// Colours a cheque by where it stands: credited and waiting on its date,
 /// ready to bank, confirmed, or sent back.
@@ -260,6 +260,9 @@ class _ChequesListState extends State<ChequesList> {
               return ListView(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
                 children: [
+                  Totals('cheques', rows.length, [
+                    ('Cheque value', rows.fold(0, (a, c) => a + c.amount), C.quote),
+                  ]),
                   if (waiting > 0) ...[
                     _WaitingBanner(waiting),
                     const SizedBox(height: 10),

@@ -1060,6 +1060,175 @@ void main() {
     });
   });
 
+  group('giving cash back', () {
+    late String pid, bid, cid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 100);
+      bid = (await batches(pid)).first.id;
+      cid = await saveCustomer(name: 'ABC Shop');
+    });
+
+    SellLine soap(int qty) => SellLine(
+        productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty);
+
+    test('an advance handed back leaves nothing on the account', () async {
+      await recordPayment(cid, rs(500));
+      expect(await balance(cid), -rs(500), reason: 'they are ahead');
+
+      await payOut(cid, rs(500), method: 'cash');
+      expect(await balance(cid), 0);
+    });
+
+    test('money handed back stops settling bills that come later', () async {
+      // The trap: an advance that has already been given back must not still
+      // be sitting there quietly paying off the next sale.
+      await recordPayment(cid, rs(500));
+      await payOut(cid, rs(500));
+
+      await saveDoc(customerId: cid, quote: false, lines: [soap(5)]);
+
+      final bill = (await docs(customerId: cid, kind: 'sale')).single;
+      expect(bill.settled, 0, reason: 'there was no money left to settle it');
+      expect(bill.due, rs(350));
+      expect(await balance(cid), rs(350));
+    });
+
+    test('handing back part of it leaves the rest working', () async {
+      await recordPayment(cid, rs(500));
+      await payOut(cid, rs(200));
+      await saveDoc(customerId: cid, quote: false, lines: [soap(10)]);
+
+      final bill = (await docs(customerId: cid, kind: 'sale')).single;
+      expect(bill.settled, rs(300), reason: 'what is left of the advance');
+      expect(bill.due, rs(400));
+      expect(await balance(cid), rs(400));
+    });
+
+    test('it is on the account as its own entry, with a receipt', () async {
+      await recordPayment(cid, rs(500));
+      final id = await payOut(cid, rs(500), method: 'bank', note: 'Cash returned');
+
+      final e = (await ledger(cid)).first;
+      expect(e.id, id);
+      expect(e.type, 'refund');
+      expect(e.amount, rs(500), reason: 'positive, the way a debt is');
+
+      final r = paymentReceipt((await customer(cid))!, id, await ledger(cid),
+          await docs(customerId: cid))!;
+      expect(r.kind, 'Refund');
+      expect(r.totals.first, ('Cash returned', rs(500)));
+      expect(r.reference, 'Paid out by Bank transfer');
+    });
+
+    test('nothing and less than nothing are refused', () async {
+      expect(() => payOut(cid, 0), throwsA(isA<Exception>()));
+      expect(() => payOut(cid, -rs(100)), throwsA(isA<Exception>()));
+      expect(await ledger(cid), isEmpty);
+    });
+  });
+
+  group('what the shelf is worth', () {
+    test('both figures, counting only what is still there', () async {
+      final pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 10);
+      await buy('Rice', cost: rs(1000), price: rs(1300), qty: 4);
+
+      var v = await stockValue();
+      expect(v.items, 14);
+      expect(v.cost, rs(50) * 10 + rs(1000) * 4);
+      expect(v.retail, rs(70) * 10 + rs(1300) * 4);
+
+      // Selling takes goods off the shelf, and off the figure with them.
+      final cid = await saveCustomer(name: 'ABC');
+      await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(
+            productId: pid,
+            batchId: (await batches(pid)).first.id,
+            name: 'Soap',
+            price: rs(70),
+            qty: 4)
+      ]);
+
+      v = await stockValue();
+      expect(v.items, 10);
+      expect(v.cost, rs(50) * 6 + rs(1000) * 4);
+    });
+
+    test('an empty shop is worth nothing, not an error', () async {
+      final v = await stockValue();
+      expect((v.items, v.cost, v.retail), (0, 0, 0));
+    });
+  });
+
+  group('who is late', () {
+    late String pid, bid;
+
+    setUp(() async {
+      pid = await buy('Soap', cost: rs(50), price: rs(70), qty: 500);
+      bid = (await batches(pid)).first.id;
+    });
+
+    /// A sale written [daysAgo] days ago, backdated in the books the same way
+    /// the rest of the app would have seen it happen.
+    Future<String> oldSale(String cid, int qty, int daysAgo) async {
+      final id = await saveDoc(customerId: cid, quote: false, lines: [
+        SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: qty)
+      ]);
+      final at = DateTime.now()
+          .subtract(Duration(days: daysAgo))
+          .millisecondsSinceEpoch;
+      await db.update('docs', {'created_at': at}, where: 'id = ?', whereArgs: [id]);
+      await db.update('ledger', {'created_at': at},
+          where: 'ref_id = ?', whereArgs: [id]);
+      return id;
+    }
+
+    test('only bills past the date count, and the days are the oldest',
+        () async {
+      final late = await saveCustomer(name: 'Late');
+      await oldSale(late, 10, 30); // Rs. 700, long overdue
+      await oldSale(late, 4, 20); // Rs. 280, also overdue
+      await saveDoc(customerId: late, quote: false, lines: [
+        SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: 2)
+      ]); // today, not late
+
+      final onTime = await saveCustomer(name: 'On time');
+      await saveDoc(customerId: onTime, quote: false, lines: [
+        SellLine(productId: pid, batchId: bid, name: 'Soap', price: rs(70), qty: 5)
+      ]);
+
+      final rows = await overdue();
+      expect(rows, hasLength(1), reason: 'only the one with a bill past its date');
+      expect(rows.single.customer.name, 'Late');
+      expect(rows.single.overdue, rs(980), reason: 'the two late bills, not today');
+      expect(rows.single.days, 30 - creditDays);
+    });
+
+    test('paying up takes them off the list', () async {
+      final c = await saveCustomer(name: 'Paid up');
+      await oldSale(c, 10, 30);
+      expect(await overdue(), hasLength(1));
+
+      await recordPayment(c, rs(700));
+      expect(await overdue(), isEmpty);
+    });
+
+    test('a cancelled bill is never late', () async {
+      final c = await saveCustomer(name: 'Cancelled');
+      await cancelDoc(await oldSale(c, 10, 30));
+      expect(await overdue(), isEmpty);
+    });
+
+    test('the worst debt comes first', () async {
+      final small = await saveCustomer(name: 'Small');
+      await oldSale(small, 2, 40);
+      final big = await saveCustomer(name: 'Big');
+      await oldSale(big, 20, 10);
+
+      expect((await overdue()).map((x) => x.customer.name), ['Big', 'Small']);
+    });
+  });
+
   group('editing a sale instead of cancelling it', () {
     late String pid, bid, cid;
 
@@ -1130,6 +1299,20 @@ void main() {
       expect(() => editDoc(id, lines: [soap(4)]), throwsA(isA<Exception>()));
       expect(await balance(cid), 0);
       expect((await product(pid))!.stock, 100);
+    });
+
+    test('what the bill used to say is kept', () async {
+      final id = await saveDoc(
+          customerId: cid, quote: false, lines: [soap(10)], paid: rs(200));
+      await editDoc(id, lines: [soap(4)]);
+      await editDoc(id, lines: [soap(6), soap(1, price: rs(90))]);
+
+      final was = await docEdits(id);
+      expect(was, hasLength(2), reason: 'one entry per correction');
+      expect(was.first.total, rs(280), reason: 'newest first: the second version');
+      expect(was.first.lines.single, ('Soap', 4, rs(70)));
+      expect(was.last.total, rs(700), reason: 'and the bill as first written');
+      expect(was.last.paid, rs(200), reason: 'including the cash taken then');
     });
 
     test('a price under cost is refused, the same as when selling', () async {

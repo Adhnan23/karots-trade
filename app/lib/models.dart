@@ -11,6 +11,15 @@ const creditDays = 7;
 DateTime payBy(int soldAt) =>
     DateTime.fromMillisecondsSinceEpoch(soldAt).add(const Duration(days: creditDays));
 
+/// How long a quotation is worth anything. Past this the prices on it are the
+/// prices of another month, and it should stop looking like a live offer.
+const quoteDays = 30;
+
+bool quoteExpired(int quotedAt) =>
+    DateTime.fromMillisecondsSinceEpoch(quotedAt)
+        .add(const Duration(days: quoteDays))
+        .isBefore(DateTime.now());
+
 int _i(Object? v) => (v as num?)?.toInt() ?? 0;
 String _s(Object? v) => (v as String?) ?? '';
 

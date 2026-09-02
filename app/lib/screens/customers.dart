@@ -164,6 +164,10 @@ class _CustomerScreenState extends State<CustomerScreen> {
         await showOutstanding(context, c.id);
       case 'statement':
         await showStatement(context, c.id);
+      case 'refund':
+        final done = await Navigator.push<bool>(context,
+            MaterialPageRoute(builder: (_) => PaymentScreen(c, out: true)));
+        if (done == true) _reload();
       case 'adjust':
       case 'opening':
         final done = await Navigator.push<bool>(
@@ -210,6 +214,7 @@ class _CustomerScreenState extends State<CustomerScreen> {
                     for (final (value, icon, text) in const [
                       ('outstanding', Icons.request_quote, 'Outstanding'),
                       ('statement', Icons.receipt_long, 'Full statement'),
+                      ('refund', Icons.currency_exchange, 'Give money back'),
                       ('adjust', Icons.tune, 'Adjust balance'),
                       ('opening', Icons.history_edu, 'Balance before this app'),
                       ('edit', Icons.edit, 'Edit'),
@@ -255,9 +260,16 @@ class _CustomerScreenState extends State<CustomerScreen> {
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
               if (c.phone.isNotEmpty)
-                Text(c.phone,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 16, color: Colors.black54)),
+                // The number is right there, and chasing money starts with a
+                // phone call. Tapping it dials.
+                Center(
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(foregroundColor: Colors.black54),
+                    icon: const Icon(Icons.call, size: 18),
+                    label: Text(c.phone, style: const TextStyle(fontSize: 16)),
+                    onPressed: () => call(context, c.phone),
+                  ),
+                ),
               const SizedBox(height: 16),
               Container(
                 width: double.infinity,
@@ -499,6 +511,7 @@ String entryDetail(LedgerEntry e, Map<String, Doc> byId) {
     'sale_cancelled' => 'Sale$tag cancelled',
     'return' => 'Goods returned$tag',
     'payment' => paymentDetail(e),
+    'refund' => paymentDetail(e, back: true),
     'payment_cancelled' => e.note.isEmpty ? 'Payment undone' : e.note,
     'opening' => e.note.isEmpty ? 'Balance brought forward' : e.note,
     'adjustment' => e.note.isEmpty ? 'Adjustment' : e.note,
@@ -509,9 +522,11 @@ String entryDetail(LedgerEntry e, Map<String, Doc> byId) {
 /// A payment reads as whatever was typed against it — a cheque writes its own
 /// number there — with how the money arrived added, unless the note has already
 /// said it.
-String paymentDetail(LedgerEntry e) {
+String paymentDetail(LedgerEntry e, {bool back = false}) {
   final how = e.method == 'cheque' ? '' : methodLabel(e.method);
-  final base = e.note.isEmpty ? 'Payment received' : e.note;
+  final base = e.note.isEmpty
+      ? (back ? 'Cash returned to you' : 'Payment received')
+      : e.note;
   return how.isEmpty ? base : '$base  ·  $how';
 }
 
@@ -601,6 +616,10 @@ class _AdjustScreenState extends State<AdjustScreen> {
   /// True when the entry makes the customer owe more.
   bool _owesMore = true;
 
+  /// Saving is one tap, never two. Writing an adjustment twice is silent and
+  /// the second one looks exactly like the first.
+  bool _saving = false;
+
   @override
   void dispose() {
     _amount.dispose();
@@ -609,12 +628,16 @@ class _AdjustScreenState extends State<AdjustScreen> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     final v = parseMoney(_amount.text) ?? 0;
+    setState(() => _saving = true);
     final id = await guard(
         context,
         () => s.adjustBalance(widget.customer.id, _owesMore ? v : -v,
             note: _note.text.trim(), opening: widget.opening));
-    if (id == null || !mounted) return;
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (id == null) return;
     toast(context, t('Saved'));
     Navigator.pop(context, true);
   }
@@ -693,7 +716,7 @@ class _AdjustScreenState extends State<AdjustScreen> {
           style: FilledButton.styleFrom(backgroundColor: C.settings),
           icon: const Icon(Icons.check),
           label: Text(t('Save')),
-          onPressed: _save,
+          onPressed: _saving ? null : _save,
         ),
       ])),
     );
@@ -730,6 +753,7 @@ Receipt? paymentReceipt(
   if (at < 0) return null;
 
   final e = account[at].entry, after = account[at].balance;
+  final back = e.type == 'refund';
   final byId = {for (final d in docs) d.id: d};
   final from = at - _paymentContext < 0 ? 0 : at - _paymentContext;
   final shown = account.sublist(from, at + 1);
@@ -737,12 +761,12 @@ Receipt? paymentReceipt(
   final how = methodLabel(e.method);
 
   return Receipt(
-    kind: 'Payment',
+    kind: back ? 'Refund' : 'Payment',
     no: e.no,
     date: e.createdAt,
     customer: c.name,
     customerPhone: c.phone,
-    reference: how.isEmpty ? null : 'Received by $how',
+    reference: how.isEmpty ? null : '${back ? 'Paid out by' : 'Received by'} $how',
     statement: [
       if (broughtForward != 0)
         (
@@ -755,7 +779,7 @@ Receipt? paymentReceipt(
         (onDayMs(r.entry.createdAt), entryDetail(r.entry, byId), r.entry.amount, r.balance)
     ],
     totals: [
-      ('Payment received', -e.amount),
+      (back ? 'Cash returned' : 'Payment received', e.amount.abs()),
       (
         after > 0
             ? 'Still owing'
@@ -770,7 +794,11 @@ Receipt? paymentReceipt(
         'The account before ${onDayMs(shown.first.entry.createdAt)} is shown as one '
             'brought forward line. Ask for a full statement to see all of it.',
     ],
-    footnote: e.note.isEmpty ? 'Received with thanks.' : e.note,
+    footnote: e.note.isNotEmpty
+        ? e.note
+        : back
+            ? 'Cash handed back and taken off the account.'
+            : 'Received with thanks.',
   );
 }
 
@@ -789,6 +817,7 @@ class _LedgerRow extends StatelessWidget {
     'sale': (Icons.point_of_sale, C.sell, 'Sale'),
     'payment': (Icons.payments, C.advance, 'Payment'),
     'return': (Icons.assignment_return, C.ret, 'Return'),
+    'refund': (Icons.currency_exchange, C.ret, 'Cash given back'),
     'sale_cancelled': (Icons.cancel, Colors.grey, 'Sale cancelled'),
     'payment_cancelled': (Icons.undo, Colors.grey, 'Payment undone'),
     'opening': (Icons.history_edu, C.owe, 'Balance before this app'),
@@ -866,7 +895,8 @@ class _LedgerRow extends StatelessWidget {
           _ when doc != null =>
             () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => DocScreen(doc!.id))),
-          'payment' => () => showPaymentReceipt(context, customer, e.id),
+          'payment' || 'refund' => () =>
+              showPaymentReceipt(context, customer, e.id),
           _ => null,
         },
       ),
@@ -884,6 +914,7 @@ class CustomerForm extends StatefulWidget {
 class _CustomerFormState extends State<CustomerForm> {
   late final _name = TextEditingController(text: widget.customer?.name ?? '');
   late final _phone = TextEditingController(text: widget.customer?.phone ?? '');
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -919,13 +950,21 @@ class _CustomerFormState extends State<CustomerForm> {
             style: FilledButton.styleFrom(backgroundColor: C.customers),
             icon: const Icon(Icons.check),
             label: Text(t('Save')),
-            onPressed: () async {
-              final id = await guard(
-                  context,
-                  () => s.saveCustomer(
-                      id: widget.customer?.id, name: _name.text, phone: _phone.text));
-              if (id != null && context.mounted) Navigator.pop(context, id);
-            },
+            onPressed: _saving
+                ? null
+                : () async {
+                    if (_saving) return;
+                    setState(() => _saving = true);
+                    final id = await guard(
+                        context,
+                        () => s.saveCustomer(
+                            id: widget.customer?.id,
+                            name: _name.text,
+                            phone: _phone.text));
+                    if (!context.mounted) return;
+                    setState(() => _saving = false);
+                    if (id != null) Navigator.pop(context, id);
+                  },
           ),
         ]),
       );
@@ -935,7 +974,12 @@ class _CustomerFormState extends State<CustomerForm> {
 /// the ledger handles both cases with one entry, and the label says which.
 class PaymentScreen extends StatefulWidget {
   final Customer customer;
-  const PaymentScreen(this.customer, {super.key});
+
+  /// Money going the other way: cash handed back to the customer. The screen is
+  /// the same one — an amount, how it moved, and when — so there is nothing new
+  /// to learn for something that happens twice a month.
+  final bool out;
+  const PaymentScreen(this.customer, {this.out = false, super.key});
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
@@ -955,6 +999,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
   /// The day the money came in. Money is often entered days late, so this can
   /// be moved back; left alone it is today, which is the normal case.
   DateTime? _taken;
+
+  /// One tap is one payment. Two taps on a slow phone used to be two, and a
+  /// customer's debt coming down twice is not something anyone notices.
+  bool _saving = false;
+
+  /// The bills still open, so the amount for any one of them is a tap away.
+  late final Future<List<Doc>> _open =
+      s.outstanding(widget.customer.id).then((o) => o.bills);
 
   @override
   void dispose() {
@@ -983,8 +1035,26 @@ class _PaymentScreenState extends State<PaymentScreen> {
       : DateTime(_taken!.year, _taken!.month, _taken!.day, 12).millisecondsSinceEpoch;
 
   Future<void> _save() async {
+    // Checked before anything is awaited, so a second tap in the same frame —
+    // which the disabled button has not been rebuilt for yet — still does
+    // nothing. Dart runs this to the first await without interruption.
+    if (_saving) return;
     final amount = parseMoney(_amount.text) ?? 0;
     final nav = Navigator.of(context);
+    setState(() => _saving = true);
+
+    if (widget.out) {
+      final id = await guard(
+          context,
+          () => s.payOut(widget.customer.id, amount,
+              note: _note.text.trim(), method: _method, at: _takenAt));
+      if (!mounted) return;
+      setState(() => _saving = false);
+      if (id == null) return;
+      await showPaymentReceipt(context, widget.customer, id);
+      nav.pop(true);
+      return;
+    }
 
     if (_byCheque) {
       final id = await guard(
@@ -998,7 +1068,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 note: _note.text.trim(),
                 at: _takenAt,
               ));
-      if (id == null || !mounted) return;
+      if (!mounted) return;
+      setState(() => _saving = false);
+      if (id == null) return;
       await showChequeReceipt(context, id);
       nav.pop(true);
       return;
@@ -1008,7 +1080,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
         context,
         () => s.recordPayment(widget.customer.id, amount,
             note: _note.text.trim(), method: _method, at: _takenAt));
-    if (id == null || !mounted) return;
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (id == null) return;
     await showPaymentReceipt(context, widget.customer, id);
     nav.pop(true);
   }
@@ -1017,11 +1091,17 @@ class _PaymentScreenState extends State<PaymentScreen> {
   Widget build(BuildContext context) {
     final owed = widget.customer.balance;
     final amount = parseMoney(_amount.text) ?? 0;
-    final after = owed - amount;
-    final color = _byCheque ? C.quote : C.buy;
+    final after = widget.out ? owed + amount : owed - amount;
+    final color = widget.out
+        ? C.ret
+        : _byCheque
+            ? C.quote
+            : C.buy;
 
     return Scaffold(
-      appBar: AppBar(backgroundColor: color, title: Text(t('Payment'))),
+      appBar: AppBar(
+          backgroundColor: color,
+          title: Text(t(widget.out ? 'Give money back' : 'Payment'))),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Text(widget.customer.name,
             textAlign: TextAlign.center,
@@ -1035,26 +1115,40 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   color: balanceLabel(owed).color)),
         ),
         const SizedBox(height: 18),
-        SegmentedButton<bool>(
-          style: SegmentedButton.styleFrom(
-              textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-              selectedBackgroundColor: color,
-              selectedForegroundColor: Colors.white),
-          segments: [
-            ButtonSegment(
-                value: false, label: Fit(t('Cash')), icon: const Icon(Icons.payments)),
-            ButtonSegment(
-                value: true,
-                label: Fit(t('Cheque')),
-                icon: const Icon(Icons.account_balance)),
-          ],
-          selected: {_byCheque},
-          onSelectionChanged: (v) => setState(() => _byCheque = v.first),
-        ),
-        const SizedBox(height: 18),
+        // Money going out is always cash of some kind; there is no cheque to
+        // take in, so the choice is not offered.
+        if (!widget.out) ...[
+          SegmentedButton<bool>(
+            style: SegmentedButton.styleFrom(
+                textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                selectedBackgroundColor: color,
+                selectedForegroundColor: Colors.white),
+            segments: [
+              ButtonSegment(
+                  value: false, label: Fit(t('Cash')), icon: const Icon(Icons.payments)),
+              ButtonSegment(
+                  value: true,
+                  label: Fit(t('Cheque')),
+                  icon: const Icon(Icons.account_balance)),
+            ],
+            selected: {_byCheque},
+            onSelectionChanged: (v) => setState(() => _byCheque = v.first),
+          ),
+          const SizedBox(height: 18),
+        ],
         NumField(_amount, '${t('Amount')} (Rs.)', Icons.payments,
             autofocus: true, onChanged: (_) => setState(() {})),
-        if (owed > 0 && amount != owed) ...[
+        if (widget.out && owed < 0 && amount != -owed) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => setState(() => _amount.text = (-owed / 100).toString()),
+              child: Text('${t('Give back all')} ${money(-owed)}'),
+            ),
+          ),
+        ],
+        if (!widget.out && owed > 0 && amount != owed) ...[
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerRight,
@@ -1064,7 +1158,30 @@ class _PaymentScreenState extends State<PaymentScreen> {
             ),
           ),
         ],
-        if (!_byCheque) ...[
+        // The open bills, so "this is for the 1,800 one" is a tap rather than
+        // arithmetic. Money still clears the oldest bill first — that is how a
+        // running account works — and the note records what it was sent for.
+        FutureBuilder(
+          future: _open,
+          builder: (_, snap) {
+            final bills = snap.data ?? const <Doc>[];
+            if (widget.out || bills.length < 2) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Wrap(spacing: 8, runSpacing: 4, children: [
+                for (final d in bills)
+                  ActionChip(
+                    label: Text('#${d.no}  ${money(d.due)}'),
+                    onPressed: () => setState(() {
+                      _amount.text = (d.due / 100).toString();
+                      _note.text = 'For sale #${d.no}';
+                    }),
+                  ),
+              ]),
+            );
+          },
+        ),
+        if (!_byCheque || widget.out) ...[
           const SizedBox(height: 12),
           SegmentedButton<String>(
             style: SegmentedButton.styleFrom(
@@ -1118,7 +1235,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
         // Money is often written up days after it came in, so the date can be
         // moved back. Left alone it is today, which is what usually happens.
         _DayTile(
-          label: 'Date received',
+          label: widget.out ? 'Date given' : 'Date received',
           day: _taken ?? DateTime.now(),
           color: color,
           hint: _taken == null ? 'Today' : null,
@@ -1143,7 +1260,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Flexible(
-                    child: Text(t('After payment'),
+                    child: Text(t(widget.out ? 'After giving it back' : 'After payment'),
                         style: const TextStyle(fontSize: 16))),
                 const SizedBox(width: 8),
                 Flexible(
@@ -1169,7 +1286,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           style: FilledButton.styleFrom(backgroundColor: color),
           icon: const Icon(Icons.check),
           label: Text(t('Save')),
-          onPressed: _save,
+          onPressed: _saving ? null : _save,
         ),
       ]),
     );

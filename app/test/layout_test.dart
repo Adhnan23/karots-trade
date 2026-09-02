@@ -6,6 +6,8 @@ import 'package:karots_trade/main.dart';
 import 'package:karots_trade/models.dart';
 import 'package:karots_trade/screens/customers.dart';
 import 'package:karots_trade/screens/history.dart';
+import 'package:karots_trade/screens/products.dart';
+import 'package:karots_trade/screens/sell.dart';
 import 'package:karots_trade/store.dart' as s;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' hide Batch;
 
@@ -37,8 +39,7 @@ void main() {
     String? first;
     for (final (name, qty) in [('Nimal Stores', 4), ('ABC Trading', 12)]) {
       final c = await s.saveCustomer(name: name, phone: '0771234567');
-      first ??= c;
-      await s.saveDoc(customerId: c, quote: false, lines: [
+      final sale = await s.saveDoc(customerId: c, quote: false, lines: [
         SellLine(
             productId: b.productId,
             batchId: b.id,
@@ -47,6 +48,18 @@ void main() {
             listPrice: b.price,
             qty: qty)
       ]);
+      // The first customer's bill is old enough to be late, so the screens
+      // that call that out have something to draw.
+      if (first == null) {
+        final at = DateTime.now()
+            .subtract(const Duration(days: 20))
+            .millisecondsSinceEpoch;
+        await db.update('docs', {'created_at': at},
+            where: 'id = ?', whereArgs: [sale]);
+        await db.update('ledger', {'created_at': at},
+            where: 'ref_id = ?', whereArgs: [sale]);
+      }
+      first ??= c;
       await s.recordPayment(c, rs(500));
       await s.saveCheque(
           customerId: c, chequeNo: '400123', bank: 'Sampath', amount: rs(2500),
@@ -72,6 +85,69 @@ void main() {
         expect(find.text('Rs. 14,000'), findsOneWidget,
             reason: 'owed total, with both cheques already credited');
         expect(find.byType(HomeScreen), findsOneWidget);
+
+        // The late-payer section is below the fold on a small phone, and a
+        // ListView does not build what it cannot show.
+        await t.runAsync(() async {
+          await t.drag(find.byType(ListView).first, const Offset(0, -500));
+          await settle(t);
+        });
+        expect(tester_(t), isEmpty, reason: 'nor further down the page');
+        expect(find.byIcon(Icons.alarm), findsOneWidget,
+            reason: 'the customer whose bill ran past its date');
+      });
+
+      testWidgets('products fits ${size.width.toInt()}px in $lang', (t) async {
+        await t.binding.setSurfaceSize(size);
+        await t.runAsync(() async {
+          await shop();
+          locale.value = lang;
+          await t.pumpWidget(
+              MaterialApp(theme: appTheme(), home: const ProductsScreen()));
+          await settle(t);
+        });
+
+        expect(tester_(t), isEmpty, reason: 'nothing overflowed');
+        // Both stock figures side by side is the row most likely to run out
+        // of width: two long Tamil labels over two big numbers.
+        // 24 rice at 1,000 and 96 bottles at 150 are still on the shelf.
+        expect(find.text('Rs. 38,400'), findsOneWidget, reason: 'what it cost');
+        expect(find.text('Rs. 48,480'), findsOneWidget, reason: 'what it sells for');
+      });
+
+      testWidgets('selling to a late payer fits ${size.width.toInt()}px in $lang',
+          (t) async {
+        await t.binding.setSurfaceSize(size);
+        late Customer c;
+        await t.runAsync(() async {
+          c = (await s.customer(await shop()))!;
+          locale.value = lang;
+          await t.pumpWidget(
+              MaterialApp(theme: appTheme(), home: SellScreen(customer: c)));
+          await settle(t);
+        });
+
+        expect(tester_(t), isEmpty, reason: 'nothing overflowed');
+        expect(find.byIcon(Icons.warning_amber), findsOneWidget,
+            reason: 'they already owe, and some of it is late');
+      });
+
+      testWidgets('giving money back fits ${size.width.toInt()}px in $lang',
+          (t) async {
+        await t.binding.setSurfaceSize(size);
+        late Customer c;
+        await t.runAsync(() async {
+          c = (await s.customer(await shop()))!;
+          locale.value = lang;
+          await t.pumpWidget(
+              MaterialApp(theme: appTheme(), home: PaymentScreen(c, out: true)));
+          await settle(t);
+        });
+
+        expect(tester_(t), isEmpty, reason: 'nothing overflowed');
+        expect(find.byType(SegmentedButton<bool>), findsNothing,
+            reason: 'no cheque to take in when money is going out');
+        expect(find.byType(SegmentedButton<String>), findsOneWidget);
       });
 
       testWidgets('customer page fits ${size.width.toInt()}px in $lang',
