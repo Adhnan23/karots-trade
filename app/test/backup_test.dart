@@ -242,4 +242,103 @@ void main() {
         .firstWhere((p) => p['image'] != null);
     expect(base64Decode((product['image'] as Map)['b64'] as String), photo);
   });
+
+  group('carrying just the product list', () {
+    test('the file holds names and photos and nothing else', () async {
+      await seed();
+      final decoded =
+          jsonDecode(utf8.decode(await exportProducts())) as Map<String, Object?>;
+
+      expect(decoded['kind'], 'products');
+      expect((decoded['products'] as List), hasLength(3));
+      for (final table in tables.where((x) => x != 'products')) {
+        expect(decoded[table], isNull,
+            reason: '$table is the shop, not the catalogue');
+      }
+      final cola = (decoded['products'] as List)
+          .cast<Map>()
+          .firstWhere((p) => p['name'] == 'Coca-Cola 1L');
+      expect(base64Decode((cola['image'] as Map)['b64'] as String), photo,
+          reason: 'the photo is the slow part to replace');
+    });
+
+    test('a fresh install gets the catalogue back, photos and all', () async {
+      await seed();
+      final file = await exportProducts();
+
+      // Start over: everything gone.
+      await db.transaction(wipe);
+      expect(await products(), isEmpty);
+
+      expect(await importProducts(file), 3);
+      final back = await products();
+      expect(back.map((p) => p.name),
+          containsAll(['Coca-Cola 1L', 'Soap', 'Biscuits']));
+      expect(back.firstWhere((p) => p.name == 'Coca-Cola 1L').image, photo);
+      expect(back.every((p) => p.stock == 0), isTrue,
+          reason: 'the catalogue carries no stock');
+      expect(await customers(), isEmpty, reason: 'and nobody else came with it');
+    });
+
+    test('importing over a working shop adds only what is new', () async {
+      await seed();
+      final file = await exportProducts();
+      final colaBefore = (await products(q: 'Coca-Cola')).single;
+
+      expect(await importProducts(file), 0, reason: 'every name is already here');
+      expect(await products(), hasLength(3), reason: 'no duplicates');
+
+      final colaAfter = (await products(q: 'Coca-Cola')).single;
+      expect(colaAfter.id, colaBefore.id, reason: 'the same product, untouched');
+      expect(colaAfter.stock, colaBefore.stock, reason: 'with its stock intact');
+    });
+
+    test('only the missing ones are added, whatever the spelling', () async {
+      await seed();
+      final file = Uint8List.fromList(utf8.encode(jsonEncode({
+        'kind': 'products',
+        'products': [
+          {'name': 'Coca-Cola 1L'}, // already on the shelf
+          {'name': 'Sprite 1L'}, // new
+          {'name': 'sprite 1l'}, // the same one again, typed differently
+        ],
+      })));
+
+      expect(await importProducts(file), 1);
+      expect(await products(q: 'Sprite'), hasLength(1));
+      expect(await products(), hasLength(4));
+    });
+
+    test('a full backup can be raided for its products alone', () async {
+      await seed();
+      final full = await exportBackup();
+      await db.transaction(wipe);
+
+      expect(await importProducts(full), 3);
+      expect(await customers(), isEmpty,
+          reason: 'a backup used this way brings nothing but the catalogue');
+    });
+
+    test('a products file cannot be mistaken for a full backup', () async {
+      await seed();
+      final file = await exportProducts();
+      final before = await snapshot();
+
+      expect(() => importBackup(file), throwsA(isA<Object>()),
+          reason: 'this would have wiped the whole shop');
+      expect(await snapshot(), before);
+    });
+
+    test('a file with no products in it is refused', () async {
+      await seed();
+      final before = await snapshot();
+
+      for (final junk in ['{}', 'not json', '{"products": 5}', '']) {
+        expect(() => importProducts(Uint8List.fromList(utf8.encode(junk))),
+            throwsA(isA<Object>()),
+            reason: 'should refuse: $junk');
+      }
+      expect(await snapshot(), before);
+    });
+  });
 }

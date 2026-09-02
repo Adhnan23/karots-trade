@@ -393,6 +393,19 @@ const _ta = <String, String>{
       'முதலில் கணக்கைத் தீர்க்கவும், பின் நீக்கலாம்',
   'This customer has a cheque still waiting':
       'இந்த வாடிக்கையாளரின் காசோலை காத்திருக்கிறது',
+
+  // Carrying just the product list
+  'Products only': 'பொருட்கள் மட்டும்',
+  'Names and photos, without stock, prices or sales.':
+      'பெயர்களும் படங்களும் மட்டும்; இருப்பு, விலை, விற்பனை இல்லை.',
+  'Export products': 'பொருட்களை சேமி',
+  'Import products': 'பொருட்களை மீட்டெடு',
+  'Products saved': 'பொருட்கள் சேமிக்கப்பட்டன',
+  'products added': 'பொருட்கள் சேர்க்கப்பட்டன',
+  'Nothing new to add': 'புதிதாக எதுவும் இல்லை',
+  'This file has no products in it': 'இந்தக் கோப்பில் பொருட்கள் இல்லை',
+  'This is a products file. Use Import products instead':
+      'இது பொருட்கள் கோப்பு. "பொருட்களை மீட்டெடு" பயன்படுத்தவும்',
 };
 
 // ---------------------------------------------------------------- colours

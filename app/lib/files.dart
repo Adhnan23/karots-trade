@@ -329,10 +329,89 @@ Future<bool> saveBackup() async {
   return uri != null;
 }
 
+// ---------------------------------------------------------------- products only
+
+/// Just the catalogue: every product with its photo, and nothing else.
+///
+/// The product list is the slow thing to type back in — a few hundred names
+/// and photos — while stock, customers and sales are the shop's own working
+/// record and belong to a particular phone at a particular time. This is the
+/// file to keep when starting fresh, or to carry the catalogue to a second
+/// phone without carrying anyone's debts along with it.
+Future<Uint8List> exportProducts() async {
+  final data = <String, Object?>{
+    'version': 2,
+    // What tells this file apart from a full backup, so neither import can be
+    // handed the wrong one.
+    'kind': 'products',
+    'at': DateTime.now().toIso8601String(),
+    'products': (await db.query('products'))
+        .map((r) => r.map(
+            (k, v) => MapEntry(k, v is Uint8List ? {'b64': base64Encode(v)} : v)))
+        .toList(),
+  };
+  return Uint8List.fromList(utf8.encode(jsonEncode(data)));
+}
+
+Future<bool> saveProductsFile() async {
+  final bytes = await exportProducts();
+  final name =
+      'karots-products-${DateTime.now().toIso8601String().substring(0, 10)}.json';
+  final uri = await FilePicker.saveFile(
+      fileName: name, bytes: bytes, mimeType: 'application/json');
+  return uri != null;
+}
+
+/// Adds products from a catalogue file — or from a full backup, taking only its
+/// products — and returns how many were new.
+///
+/// Nothing is wiped and nothing is overwritten. A name already in the shop is
+/// left exactly as it is, with its batches and its price, so importing twice is
+/// harmless and importing into a working shop cannot cost it anything.
+Future<int> importProducts(Uint8List bytes) async {
+  final Object? parsed = jsonDecode(utf8.decode(bytes));
+  if (parsed is! Map || parsed['products'] is! List) {
+    throw Exception('This file has no products in it');
+  }
+
+  final have = {
+    for (final r in await db.query('products', columns: ['name']))
+      (r['name'] as String).trim().toLowerCase()
+  };
+  var added = 0;
+  await db.transaction((tx) async {
+    for (final row in (parsed['products'] as List)) {
+      final r = (row as Map);
+      final name = (r['name'] as String?)?.trim() ?? '';
+      if (name.isEmpty || !have.add(name.toLowerCase())) continue;
+      final image = r['image'];
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await tx.insert('products', {
+        // A fresh id, so a file from another phone can never land on top of a
+        // product that is already here.
+        'id': s.uid(),
+        'name': name,
+        'image': image is Map && image['b64'] != null
+            ? base64Decode(image['b64'] as String)
+            : null,
+        'created_at': (r['created_at'] as num?)?.toInt() ?? now,
+        'updated_at': now,
+      });
+      added++;
+    }
+  });
+  return added;
+}
+
 /// Replaces all existing data with the backup contents, in one transaction:
 /// a failed import leaves the current database untouched.
 Future<void> importBackup(Uint8List bytes) async {
   final Object? parsed = jsonDecode(utf8.decode(bytes));
+  // A catalogue file has products in it too, and wiping a working shop because
+  // someone picked the wrong file is exactly the accident worth refusing.
+  if (parsed is Map && parsed['kind'] == 'products') {
+    throw Exception('This is a products file. Use Import products instead');
+  }
   if (parsed is! Map || parsed['products'] == null) {
     throw Exception('This file is not a valid backup');
   }

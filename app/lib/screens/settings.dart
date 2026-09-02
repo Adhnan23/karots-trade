@@ -257,6 +257,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
             const Divider(height: 40),
+            Text(t('Products only'),
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(t('Names and photos, without stock, prices or sales.'),
+                style: const TextStyle(fontSize: 14, color: Colors.black54)),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: C.products),
+              icon: const Icon(Icons.inventory_2),
+              label: Fit(t('Export products')),
+              onPressed: () => _run(() async {
+                final saved = await saveProductsFile();
+                if (saved && context.mounted) toast(context, t('Products saved'));
+              }),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  foregroundColor: C.products),
+              icon: const Icon(Icons.playlist_add),
+              label: Fit(t('Import products')),
+              // No warning to give: this one only ever adds, and a name that is
+              // already here is left alone.
+              onPressed: () => _run(() async {
+                final bytes = await pickBackupFile();
+                if (bytes == null) return;
+                final added = await importProducts(bytes);
+                if (context.mounted) {
+                  toast(context,
+                      added == 0 ? t('Nothing new to add') : '$added ${t('products added')}');
+                }
+              }),
+            ),
+            const Divider(height: 40),
             Text(t('About'),
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             const SizedBox(height: 10),
